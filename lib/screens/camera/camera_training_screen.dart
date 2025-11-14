@@ -5,10 +5,10 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
-import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'pose_painter.dart';
+import 'package:fitracker_app/services/mediapipe_pose_detector.dart';
+import 'pose_painter_mediapipe.dart';
 
 // ============================================================================
 // WebSocketClient: Maneja comunicación con API de predicción
@@ -147,14 +147,13 @@ class CameraTrainingScreen extends StatefulWidget {
 }
 
 class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
-  late final PoseDetector _poseDetector;
+  late final MediaPipePoseDetector _poseDetector;
   late final WebSocketClient _wsClient;
   CameraController? _cameraController;
-  List<Pose> _poses = [];
+  List<MediaPipePose> _poses = [];
   bool _isCameraInitialized = false;
   bool _isProcessing = false;
-  int _cameraIndex = 1; // 0=trasera, 1=frontal
-  InputImageRotation _imageRotation = InputImageRotation.rotation0deg;
+  int _cameraIndex = 0; // 0=trasera (por defecto para emulador), 1=frontal
   Size _absoluteImageSize = Size.zero;
 
   // Estado de predicción
@@ -173,17 +172,31 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   static const _processingInterval = Duration(milliseconds: 33); // 30 FPS
 
   // Cache para suavizado EMA de landmarks
-  final Map<PoseLandmarkType, List<double>> _smoothCache = {};
+  final Map<int, List<double>> _smoothCache = {};
   static const double _emaAlpha = 0.6; // 60% nuevo, 40% anterior
 
   @override
   void initState() {
     super.initState();
-    _poseDetector = PoseDetector(options: PoseDetectorOptions());
+    _poseDetector = MediaPipePoseDetector();
     _wsClient = WebSocketClient();
     _wsClient.onPrediction = _handlePrediction;
+    _initializeMediaPipe();
     _initializeWebSocket();
     _initializeCamera();
+  }
+
+  Future<void> _initializeMediaPipe() async {
+    try {
+      print('🔄 Inicializando MediaPipe...');
+      await _poseDetector.initialize(
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7,
+      );
+      print('✅ MediaPipe inicializado correctamente');
+    } catch (e) {
+      print('❌ Error al inicializar MediaPipe: $e');
+    }
   }
 
   Future<void> _initializeWebSocket() async {
@@ -196,6 +209,10 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Future<void> _initializeCamera() async {
     if (await Permission.camera.request().isGranted) {
       final cameras = await availableCameras();
+      print('📷 Cámaras disponibles: ${cameras.length}');
+      for (var i = 0; i < cameras.length; i++) {
+        print('  Cámara $i: ${cameras[i].lensDirection} (${cameras[i].name})');
+      }
       if (cameras.isEmpty) {
         print("❌ No se encontraron cámaras.");
         return;
@@ -225,75 +242,32 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     }
   }
 
-  InputImage? _inputImageFromCameraImage(CameraImage image) {
-    if (_cameraController == null) return null;
-
-    _absoluteImageSize = Size(image.width.toDouble(), image.height.toDouble());
-
-    final camera = _cameraController!.description;
-    final sensorOrientation = camera.sensorOrientation;
-    InputImageRotation rotation;
-
-    if (Platform.isIOS) {
-      rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ??
-          InputImageRotation.rotation0deg;
-    } else if (Platform.isAndroid) {
-      if (camera.lensDirection == CameraLensDirection.front) {
-        rotation = InputImageRotation.rotation0deg;
-      } else {
-        rotation = InputImageRotation.rotation180deg;
-      }
-    } else {
-      rotation = InputImageRotation.rotation0deg;
-    }
-    _imageRotation = rotation;
-
-    final format = InputImageFormatValue.fromRawValue(image.format.raw);
-    if (format == null) return null;
-
-    final allBytes = WriteBuffer();
-    for (final Plane plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
-    final bytes = allBytes.done().buffer.asUint8List();
-
-    return InputImage.fromBytes(
-      bytes: bytes,
-      metadata: InputImageMetadata(
-        size: _absoluteImageSize,
-        rotation: _imageRotation,
-        format: format,
-        bytesPerRow: image.planes[0].bytesPerRow,
-      ),
-    );
-  }
+  // MediaPipe no necesita conversión de InputImage, procesa directamente CameraImage
 
   /// Aplica suavizado EMA (Exponential Moving Average) a los landmarks
   /// Formula: smoothed = alpha * current + (1 - alpha) * previous
-  Map<PoseLandmarkType, PoseLandmark> _smoothPose(
-      Map<PoseLandmarkType, PoseLandmark> currentLandmarks) {
-    final Map<PoseLandmarkType, PoseLandmark> smoothed = {};
+  Map<int, MediaPipeLandmark> _smoothPose(Map<int, MediaPipeLandmark> currentLandmarks) {
+    final Map<int, MediaPipeLandmark> smoothed = {};
 
-    currentLandmarks.forEach((type, landmark) {
+    currentLandmarks.forEach((index, landmark) {
       final x = landmark.x;
       final y = landmark.y;
 
-      if (_smoothCache.containsKey(type)) {
-        final prev = _smoothCache[type]!;
+      if (_smoothCache.containsKey(index)) {
+        final prev = _smoothCache[index]!;
         final smoothedX = _emaAlpha * x + (1 - _emaAlpha) * prev[0];
         final smoothedY = _emaAlpha * y + (1 - _emaAlpha) * prev[1];
-        _smoothCache[type] = [smoothedX, smoothedY];
+        _smoothCache[index] = [smoothedX, smoothedY];
 
-        smoothed[type] = PoseLandmark(
-          type: type,
+        smoothed[index] = MediaPipeLandmark(
           x: smoothedX,
           y: smoothedY,
           z: landmark.z,
           likelihood: landmark.likelihood,
         );
       } else {
-        _smoothCache[type] = [x, y];
-        smoothed[type] = landmark;
+        _smoothCache[index] = [x, y];
+        smoothed[index] = landmark;
       }
     });
 
@@ -311,20 +285,21 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
 
     _isProcessing = true;
 
-    final inputImage = _inputImageFromCameraImage(image);
-    if (inputImage == null) {
-      _isProcessing = false;
-      return;
-    }
+    _absoluteImageSize = Size(image.width.toDouble(), image.height.toDouble());
 
     try {
-      final poses = await _poseDetector.processImage(inputImage);
-      if (mounted && poses.isNotEmpty) {
-        final pose = poses.first;
+      final result = await _poseDetector.processImage(
+        imageData: image.planes[0].bytes,
+        width: image.width,
+        height: image.height,
+      );
+
+      if (mounted && result != null && result.poses.isNotEmpty) {
+        final pose = result.poses.first;
 
         // Aplicar suavizado EMA
         final smoothedLandmarks = _smoothPose(pose.landmarks);
-        final smoothedPose = Pose(landmarks: smoothedLandmarks);
+        final smoothedPose = MediaPipePose(landmarks: smoothedLandmarks);
 
         setState(() {
           _poses = [smoothedPose];
@@ -356,7 +331,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
         } catch (e) {
           print('❌ Error al procesar keypoints: $e');
         }
-      } else if (poses.isEmpty) {
+      } else if (result == null || result.poses.isEmpty) {
         _keypointsBuffer.clear();
         if (_currentStatus != "No se detecta cuerpo") {
           setState(() {
@@ -376,13 +351,13 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
 
   /// Extrae 5 landmarks clave y normaliza a [0,1]
   Map<String, List<double>>? _landmarksToKeypoints(
-      Map<PoseLandmarkType, PoseLandmark> landmarks) {
+      Map<int, MediaPipeLandmark> landmarks) {
     try {
-      final shoulderL = landmarks[PoseLandmarkType.leftShoulder];
-      final hipL = landmarks[PoseLandmarkType.leftHip];
-      final ankleL = landmarks[PoseLandmarkType.leftAnkle];
-      final elbowL = landmarks[PoseLandmarkType.leftElbow];
-      final wristL = landmarks[PoseLandmarkType.leftWrist];
+      final shoulderL = landmarks[MediaPipePoseLandmark.leftShoulder];
+      final hipL = landmarks[MediaPipePoseLandmark.leftHip];
+      final ankleL = landmarks[MediaPipePoseLandmark.leftAnkle];
+      final elbowL = landmarks[MediaPipePoseLandmark.leftElbow];
+      final wristL = landmarks[MediaPipePoseLandmark.leftWrist];
 
       if (shoulderL == null || hipL == null || ankleL == null || 
           elbowL == null || wristL == null) {
@@ -506,7 +481,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   void dispose() {
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
-    _poseDetector.close();
+    _poseDetector.dispose();
     _wsClient.disconnect();
     super.dispose();
   }
@@ -675,13 +650,11 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
                     CameraPreview(_cameraController!),
                     if (_poses.isNotEmpty)
                       CustomPaint(
-                        painter: PosePainter(
+                        painter: PosePainterMediaPipe(
                           poses: _poses,
                           absoluteImageSize: _absoluteImageSize,
-                          rotation: _imageRotation,
                           cameraLensDirection:
                               _cameraController!.description.lensDirection,
-                          cameraDescription: _cameraController!.description,
                         ),
                       ),
                     Positioned(
