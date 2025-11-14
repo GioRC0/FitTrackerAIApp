@@ -22,26 +22,33 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   bool _isCameraInitialized = false;
   bool _isProcessing = false;
   int _cameraIndex = 1; // 0 para trasera, 1 para frontal
-  InputImageRotation _imageRotation = InputImageRotation.rotation0deg; // Variable para guardar la rotación
-  Size _absoluteImageSize = Size.zero; // Variable para guardar el tamaño de la imagen
-  
-  // Variables para clasificación de plank
-  String _currentPrediction = ""; // Usado en lógica de clasificación
-  double _currentConfidence = 0.0; // Usado en _buildFeedbackPanel
-  Map<String, double> _allProbabilities = {}; // Usado en _buildFeedbackPanel
+  InputImageRotation _imageRotation = InputImageRotation.rotation0deg;
+  Size _absoluteImageSize = Size.zero;
+
+  // Clasificación de plank
+  String _currentPrediction = "";
+  double _currentConfidence = 0.0;
+  Map<String, double> _allProbabilities = {};
   String _currentStatus = "Iniciando...";
-  
-  // Buffer de keypoints para clasificación (30 frames)
+
+  // Buffer temporal de keypoints
   final List<Map<String, List<double>>> _keypointsBuffer = [];
-  static const int _bufferSize = 30;
-  
+
+  /// Queremos ~1 segundo de ventana.
+  /// Con _processingInterval = 150 ms ≈ 6.6 fps → 7–8 frames ≈ 1 s.
+  static const int _bufferSize = 8;
+
   // Control de tiempo para evitar sobrecarga
   DateTime _lastProcessedTime = DateTime.now();
-  static const _processingInterval = Duration(milliseconds: 150); // Procesar cada 150ms (~7 FPS, más estable)
-  
-  // Suavizado de poses (Exponential Moving Average)
-  Map<PoseLandmarkType, PoseLandmark>? _smoothedLandmarks;
-  static const double _smoothingAlpha = 0.5; // 50% actual + 50% anterior: balance entre reactividad y estabilidad
+  static const _processingInterval = Duration(milliseconds: 150);
+
+  /// Sensibilidad por clase (equivalente a SENSIBILIDAD_CLASE en Python)
+  static const Map<String, double> _sensitivityByClass = {
+    'plank_cadera_caida': 1.0,
+    'plank_codos_abiertos': 0.5,
+    'plank_correcto': 1.3,
+    'plank_pelvis_levantada': 1.0,
+  };
 
   @override
   void initState() {
@@ -55,9 +62,6 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Future<void> _initializeClassifier() async {
     try {
       await _plankClassifier.load();
-      // 🐛 DEBUG: Descomentar para probar con frame manual
-      // await _plankClassifier.testWithManualFrame();
-      
       setState(() {
         _currentStatus = "Listo para entrenar";
       });
@@ -76,15 +80,15 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
         print("No se encontraron cámaras.");
         return;
       }
-      
-      // Asegurarse de que el índice de la cámara es válido
+
       _cameraIndex = _cameraIndex < cameras.length ? _cameraIndex : 0;
 
       _cameraController = CameraController(
         cameras[_cameraIndex],
-        ResolutionPreset.medium, // Cambiar a medium para mejor rendimiento
+        ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+        imageFormatGroup:
+            Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
       );
 
       await _cameraController!.initialize();
@@ -100,28 +104,25 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     }
   }
 
-  // --- FUNCIÓN AUXILIAR PARA CONVERTIR LA IMAGEN ---
   InputImage? _inputImageFromCameraImage(CameraImage image) {
     if (_cameraController == null) return null;
 
-    // Guardamos el tamaño y la rotación para pasarlos al Painter
-    _absoluteImageSize = Size(image.width.toDouble(), image.height.toDouble());
-
+    _absoluteImageSize = Size(
+      image.width.toDouble(),
+      image.height.toDouble(),
+    );
 
     final camera = _cameraController!.description;
     final sensorOrientation = camera.sensorOrientation;
     InputImageRotation rotation;
 
     if (Platform.isIOS) {
-      rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ?? InputImageRotation.rotation0deg;
+      rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ??
+          InputImageRotation.rotation0deg;
     } else if (Platform.isAndroid) {
-      // Para Android, usar la rotación directa del sensor
-      // Si los landmarks están girados 90° a la izquierda, necesitamos rotar 90° más
       if (camera.lensDirection == CameraLensDirection.front) {
-        // Cámara frontal
         rotation = InputImageRotation.rotation0deg;
       } else {
-        // Cámara trasera
         rotation = InputImageRotation.rotation180deg;
       }
     } else {
@@ -132,7 +133,6 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
     if (format == null) return null;
 
-    // Concatenar todos los bytes de los planos en una sola lista
     final allBytes = WriteBuffer();
     for (final Plane plane in image.planes) {
       allBytes.putUint8List(plane.bytes);
@@ -150,53 +150,24 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     );
   }
 
-  /// Suaviza las poses usando Exponential Moving Average (EMA)
-  Map<PoseLandmarkType, PoseLandmark> _smoothPose(Map<PoseLandmarkType, PoseLandmark> currentLandmarks) {
-    if (_smoothedLandmarks == null) {
-      // Primera vez: inicializar con los valores actuales
-      _smoothedLandmarks = Map.from(currentLandmarks);
-      return _smoothedLandmarks!;
-    }
-
-    // Aplicar EMA: smoothed = alpha * current + (1 - alpha) * previous
-    final smoothed = <PoseLandmarkType, PoseLandmark>{};
-    for (final entry in currentLandmarks.entries) {
-      final type = entry.key;
-      final current = entry.value;
-      final previous = _smoothedLandmarks![type];
-
-      if (previous != null) {
-        smoothed[type] = PoseLandmark(
-          type: type,
-          x: _smoothingAlpha * current.x + (1 - _smoothingAlpha) * previous.x,
-          y: _smoothingAlpha * current.y + (1 - _smoothingAlpha) * previous.y,
-          z: _smoothingAlpha * current.z + (1 - _smoothingAlpha) * previous.z,
-          likelihood: current.likelihood,
-        );
-      } else {
-        smoothed[type] = current;
-      }
-    }
-
-    _smoothedLandmarks = smoothed;
-    return smoothed;
+  Map<PoseLandmarkType, PoseLandmark> _smoothPose(
+      Map<PoseLandmarkType, PoseLandmark> currentLandmarks) {
+    // Sin suavizado, devolver landmarks originales
+    return currentLandmarks;
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
     if (_isProcessing) return;
-    
-    // Throttling: solo procesar cada 100ms para evitar sobrecarga
+
     final now = DateTime.now();
     if (now.difference(_lastProcessedTime) < _processingInterval) {
       return;
     }
     _lastProcessedTime = now;
-    
+
     _isProcessing = true;
 
-    // Usa la nueva función auxiliar para crear el InputImage
     final inputImage = _inputImageFromCameraImage(image);
-
     if (inputImage == null) {
       _isProcessing = false;
       return;
@@ -206,66 +177,85 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       final poses = await _poseDetector.processImage(inputImage);
       if (mounted && poses.isNotEmpty) {
         final pose = poses.first;
-        
-        // Suavizar landmarks para reducir tambaleo visual y de clasificación
+
         final smoothedLandmarks = _smoothPose(pose.landmarks);
-        
-        // Crear un Pose suavizado para el painter
         final smoothedPose = Pose(landmarks: smoothedLandmarks);
-        
+
         setState(() {
-          _poses = [smoothedPose]; // Mostrar pose suavizada
+          _poses = [smoothedPose];
         });
 
-        // Procesar con el clasificador
         try {
-          // Convertir landmarks a formato Map<String, List<double>>
           final keypoints = _landmarksToKeypoints(smoothedLandmarks);
-          
+
           if (keypoints != null) {
             _keypointsBuffer.add(keypoints);
-            
-            // Si tenemos suficientes frames, clasificar
+
             if (_keypointsBuffer.length >= _bufferSize) {
-              final probabilities = await _plankClassifier.classify(_keypointsBuffer);
-              
-              // Encontrar la clase con mayor probabilidad
-              int maxIdx = 0;
-              double maxProb = probabilities[0];
-              for (int i = 1; i < probabilities.length; i++) {
-                if (probabilities[i] > maxProb) {
-                  maxProb = probabilities[i];
-                  maxIdx = i;
-                }
+              final probabilities =
+                  await _plankClassifier.classify(_keypointsBuffer);
+
+              // --- Ajuste de sensibilidad por clase (como en Python) ---
+              // Construimos mapa {clase: prob}
+              final Map<String, double> rawProbs = {
+                for (int i = 0; i < classLabels.length; i++)
+                  classLabels[i]: probabilities[i]
+              };
+
+              // Aplicar factor de sensibilidad y normalizar
+              final Map<String, double> adjustedProbs = {};
+              double total = 0.0;
+              rawProbs.forEach((label, prob) {
+                final factor = _sensitivityByClass[label] ?? 1.0;
+                final adjusted = prob * factor;
+                adjustedProbs[label] = adjusted;
+                total += adjusted;
+              });
+
+              final Map<String, double> finalProbs =
+                  total > 0.0
+                      ? adjustedProbs.map(
+                          (k, v) => MapEntry(k, v / total),
+                        )
+                      : adjustedProbs;
+
+              // Ordenar por probabilidad descendente
+              final sortedEntries = finalProbs.entries.toList()
+                ..sort((a, b) => b.value.compareTo(a.value));
+
+              final best = sortedEntries.first;
+              final predictedClass = best.key;
+              final bestProb = best.value;
+
+              // Mantener el mapa en orden para mostrar top 4
+              final orderedMap = <String, double>{};
+              for (final e in sortedEntries) {
+                orderedMap[e.key] = e.value;
               }
-              
-              final predictedClass = classLabels[maxIdx];
-              
+
               setState(() {
                 _currentPrediction = predictedClass;
-                _currentConfidence = maxProb;
-                _allProbabilities = {
-                  for (int i = 0; i < classLabels.length; i++) classLabels[i]: probabilities[i]
-                };
-                _currentStatus = predictedClass.replaceAll('plank_', '').replaceAll('_', ' ');
+                _currentConfidence = bestProb;
+                _allProbabilities = orderedMap;
+                _currentStatus = predictedClass
+                    .replaceAll('plank_', '')
+                    .replaceAll('_', ' ');
               });
-              
-              // Limpiar buffer después de clasificar
+
               _keypointsBuffer.clear();
             }
           }
         } catch (e) {
-          // Error silencioso, continuar procesando
+          // Error silencioso, continuar
         }
       } else if (poses.isEmpty) {
-        // No se detecta persona
         _keypointsBuffer.clear();
-        _smoothedLandmarks = null; // Resetear suavizado
         if (_currentStatus != "No se detecta cuerpo") {
           setState(() {
             _currentStatus = "No se detecta cuerpo";
             _currentPrediction = "";
             _currentConfidence = 0.0;
+            _allProbabilities = {};
           });
         }
       }
@@ -297,9 +287,10 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     await _initializeCamera();
   }
 
-  /// Convierte landmarks de Google ML Kit al formato Map<String, List<double>>
-  /// Filtra por confianza mínima para reducir ruido
-  Map<String, List<double>>? _landmarksToKeypoints(Map<PoseLandmarkType, PoseLandmark> landmarks) {
+  /// Convierte landmarks al formato Map<String, List<double>>,
+  /// NORMALIZANDO x,y a [0,1] como en MediaPipe Python.
+  Map<String, List<double>>? _landmarksToKeypoints(
+      Map<PoseLandmarkType, PoseLandmark> landmarks) {
     try {
       final shoulderL = landmarks[PoseLandmarkType.leftShoulder];
       final hipL = landmarks[PoseLandmarkType.leftHip];
@@ -307,14 +298,16 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       final elbowL = landmarks[PoseLandmarkType.leftElbow];
       final wristL = landmarks[PoseLandmarkType.leftWrist];
 
-      if (shoulderL == null || hipL == null || ankleL == null || 
-          elbowL == null || wristL == null) {
+      if (shoulderL == null ||
+          hipL == null ||
+          ankleL == null ||
+          elbowL == null ||
+          wristL == null) {
         return null;
       }
 
-      // ✅ Filtrar por confianza mínima (MediaPipe likelihood)
       const minConfidence = 0.5;
-      if (shoulderL.likelihood < minConfidence || 
+      if (shoulderL.likelihood < minConfidence ||
           hipL.likelihood < minConfidence ||
           ankleL.likelihood < minConfidence ||
           elbowL.likelihood < minConfidence ||
@@ -322,29 +315,25 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
         return null;
       }
 
-      // ✅ Validar que las coordenadas estén en el rango esperado [0, 1]
-      bool isValidCoord(double val) => val >= 0.0 && val <= 1.0;
-      if (!isValidCoord(shoulderL.x) || !isValidCoord(shoulderL.y) ||
-          !isValidCoord(hipL.x) || !isValidCoord(hipL.y) ||
-          !isValidCoord(ankleL.x) || !isValidCoord(ankleL.y) ||
-          !isValidCoord(elbowL.x) || !isValidCoord(elbowL.y) ||
-          !isValidCoord(wristL.x) || !isValidCoord(wristL.y)) {
+      if (_absoluteImageSize.width <= 0 || _absoluteImageSize.height <= 0) {
         return null;
       }
 
+      double nx(double x) => x / _absoluteImageSize.width;
+      double ny(double y) => y / _absoluteImageSize.height;
+
       return {
-        'shoulder_l': [shoulderL.x, shoulderL.y],
-        'hip_l': [hipL.x, hipL.y],
-        'ankle_l': [ankleL.x, ankleL.y],
-        'elbow_l': [elbowL.x, elbowL.y],
-        'wrist_l': [wristL.x, wristL.y],
+        'shoulder_l': [nx(shoulderL.x), ny(shoulderL.y)],
+        'hip_l': [nx(hipL.x), ny(hipL.y)],
+        'ankle_l': [nx(ankleL.x), ny(ankleL.y)],
+        'elbow_l': [nx(elbowL.x), ny(elbowL.y)],
+        'wrist_l': [nx(wristL.x), ny(wristL.y)],
       };
     } catch (e) {
       return null;
     }
   }
 
-  /// Construye el panel de feedback en tiempo real (replica la UI de Python)
   Widget _buildFeedbackPanel() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -357,7 +346,6 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Estado actual
           Row(
             children: [
               const Text(
@@ -382,8 +370,6 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          
-          // Confianza
           Row(
             children: [
               const Text(
@@ -408,8 +394,6 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          
-          // Barra de progreso del buffer
           LinearProgressIndicator(
             value: _keypointsBuffer.length / _bufferSize,
             backgroundColor: Colors.grey[800],
@@ -422,8 +406,6 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
             'Analizando: ${((_keypointsBuffer.length / _bufferSize) * 100).toStringAsFixed(0)}%',
             style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
-          
-          // Probabilidades de todas las clases
           if (_allProbabilities.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text(
@@ -436,7 +418,9 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
             ),
             const SizedBox(height: 8),
             ..._allProbabilities.entries.take(4).map((entry) {
-              final displayName = entry.key.replaceAll('plank_', '').replaceAll('_', ' ');
+              final displayName = entry.key
+                  .replaceAll('plank_', '')
+                  .replaceAll('_', ' ');
               final percentage = (entry.value * 100).toStringAsFixed(0);
               return Padding(
                 padding: const EdgeInsets.only(bottom: 4),
@@ -463,14 +447,16 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     } else if (status.contains('Error') || status.contains('Iniciando')) {
       return Colors.grey;
     } else {
-      return Colors.redAccent; // Postura incorrecta
+      return Colors.redAccent;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (!_isCameraInitialized || _cameraController == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
 
     return Scaffold(
@@ -488,9 +474,8 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          // Calcular el aspect ratio de la cámara
           final cameraAspectRatio = _cameraController!.value.aspectRatio;
-          
+
           return Container(
             color: Colors.black,
             child: Center(
@@ -500,18 +485,17 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
                   fit: StackFit.expand,
                   children: [
                     CameraPreview(_cameraController!),
-                    // --- Overlay con landmarks ---
                     if (_poses.isNotEmpty)
                       CustomPaint(
                         painter: PosePainter(
                           poses: _poses,
                           absoluteImageSize: _absoluteImageSize,
                           rotation: _imageRotation,
-                          cameraLensDirection: _cameraController!.description.lensDirection,
+                          cameraLensDirection:
+                              _cameraController!.description.lensDirection,
                           cameraDescription: _cameraController!.description,
                         ),
                       ),
-                    // --- Panel de Feedback en Tiempo Real ---
                     Positioned(
                       top: 20,
                       left: 20,
