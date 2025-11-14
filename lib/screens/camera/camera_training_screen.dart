@@ -1,12 +1,144 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'pose_painter.dart';
-import 'package:fitracker_app/services/plank_classifier_service.dart';
 
+// ============================================================================
+// WebSocketClient: Maneja comunicación con API de predicción
+// ============================================================================
+class WebSocketClient {
+  final String wsUrl = 'wss://plank-repo.fly.dev/ws/predict';
+  WebSocketChannel? _channel;
+  Function(Map<String, double>)? onPrediction;
+  bool _isConnected = false;
+
+  /// Sensibilidad por clase (EQUIVALENTE A SENSIBILIDAD_CLASE en Python)
+  static const Map<String, double> _sensitivityByClass = {
+    'plank_cadera_caida': 0.45,
+    'plank_codos_abiertos': 0.45,
+    'plank_correcto': 1.75,
+    'plank_pelvis_levantada': 1.0,
+  };
+
+  Future<void> connect() async {
+    try {
+      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _isConnected = true;
+      print('✅ WebSocket conectado a $wsUrl');
+
+      _channel!.stream.listen(
+        (message) {
+          try {
+            final data = jsonDecode(message);
+            
+            // Etiquetas de clases (mismo orden que Python)
+            const classLabels = [
+              'plank_cadera_caida',
+              'plank_codos_abiertos',
+              'plank_correcto',
+              'plank_pelvis_levantada',
+            ];
+
+            // --- OBTENER PREDICCIÓN Y PROBABILIDADES (compatible con real_time_feedback.py) ---
+            // Intentar diferentes nombres de campo para la predicción
+            final pred = data['pred'] ?? 
+                        data['prediction'] ?? 
+                        data['class'] ?? 
+                        data['predicted_class'] ?? 
+                        '?';
+
+            // Intentar diferentes nombres de campo para las probabilidades
+            dynamic probas = data['proba'] ?? 
+                           data['probabilities'] ?? 
+                           data['probs'] ?? 
+                           {};
+
+            // Si probas es una lista, convertir a Map con class labels
+            Map<String, double> rawProbs = {};
+            if (probas is List) {
+              for (int i = 0; i < classLabels.length && i < probas.length; i++) {
+                rawProbs[classLabels[i]] = (probas[i] as num).toDouble();
+              }
+            } else if (probas is Map) {
+              // Si ya es un dict/map, convertir valores a double
+              probas.forEach((key, value) {
+                rawProbs[key.toString()] = (value as num).toDouble();
+              });
+            }
+
+            // Si no hay probabilidades, crear un mapa vacío
+            if (rawProbs.isEmpty) {
+              print('⚠️ No se encontraron probabilidades en la respuesta');
+              rawProbs = {};
+            }
+
+            // --- APLICAR SENSIBILIDAD POR CLASE (como en Python) ---
+            final Map<String, double> adjustedProbs = {};
+            double total = 0.0;
+            rawProbs.forEach((label, prob) {
+              final factor = _sensitivityByClass[label] ?? 1.0;
+              final adjusted = prob * factor;
+              adjustedProbs[label] = adjusted;
+              total += adjusted;
+            });
+
+            // Normalizar
+            final Map<String, double> finalProbs = total > 0.0
+                ? adjustedProbs.map((k, v) => MapEntry(k, v / total))
+                : rawProbs; // Si total es 0, devolver probs originales
+
+            print('🎯 Raw: $rawProbs');
+            print('⚖️ Adjusted: $finalProbs');
+            print('📊 Predicción: $pred');
+
+            onPrediction?.call(finalProbs);
+          } catch (e) {
+            print('❌ Error al procesar mensaje WebSocket: $e');
+          }
+        },
+        onError: (error) {
+          print('❌ WebSocket error: $error');
+          _isConnected = false;
+        },
+        onDone: () {
+          print('⚠️ WebSocket cerrado');
+          _isConnected = false;
+        },
+      );
+    } catch (e) {
+      print('❌ Error al conectar WebSocket: $e');
+      _isConnected = false;
+    }
+  }
+
+  void sendFeatures(List<double> features) {
+    if (_isConnected && _channel != null) {
+      try {
+        final message = jsonEncode({'features': features});
+        _channel!.sink.add(message);
+      } catch (e) {
+        print('❌ Error al enviar features: $e');
+      }
+    }
+  }
+
+  void disconnect() {
+    _channel?.sink.close();
+    _isConnected = false;
+    print('✅ WebSocket desconectado');
+  }
+}
+
+// ============================================================================
+// CameraTrainingScreen: Pantalla principal con detección en tiempo real
+// ============================================================================
 class CameraTrainingScreen extends StatefulWidget {
   const CameraTrainingScreen({super.key});
 
@@ -16,60 +148,48 @@ class CameraTrainingScreen extends StatefulWidget {
 
 class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   late final PoseDetector _poseDetector;
-  late final PlankClassifier _plankClassifier;
+  late final WebSocketClient _wsClient;
   CameraController? _cameraController;
   List<Pose> _poses = [];
   bool _isCameraInitialized = false;
   bool _isProcessing = false;
-  int _cameraIndex = 1; // 0 para trasera, 1 para frontal
+  int _cameraIndex = 1; // 0=trasera, 1=frontal
   InputImageRotation _imageRotation = InputImageRotation.rotation0deg;
   Size _absoluteImageSize = Size.zero;
 
-  // Clasificación de plank
+  // Estado de predicción
+  // ignore: unused_field
   String _currentPrediction = "";
   double _currentConfidence = 0.0;
   Map<String, double> _allProbabilities = {};
   String _currentStatus = "Iniciando...";
 
-  // Buffer temporal de keypoints
+  // Buffer de keypoints para calcular features
   final List<Map<String, List<double>>> _keypointsBuffer = [];
+  static const int _bufferSize = 15; // 15 frames ≈ 0.5 segundos a 30 FPS
 
-  /// Queremos ~1 segundo de ventana.
-  /// Con _processingInterval = 150 ms ≈ 6.6 fps → 7–8 frames ≈ 1 s.
-  static const int _bufferSize = 8;
-
-  // Control de tiempo para evitar sobrecarga
+  // Control de tiempo
   DateTime _lastProcessedTime = DateTime.now();
-  static const _processingInterval = Duration(milliseconds: 150);
+  static const _processingInterval = Duration(milliseconds: 33); // 30 FPS
 
-  /// Sensibilidad por clase (equivalente a SENSIBILIDAD_CLASE en Python)
-  static const Map<String, double> _sensitivityByClass = {
-    'plank_cadera_caida': 1.0,
-    'plank_codos_abiertos': 0.5,
-    'plank_correcto': 1.3,
-    'plank_pelvis_levantada': 1.0,
-  };
+  // Cache para suavizado EMA de landmarks
+  final Map<PoseLandmarkType, List<double>> _smoothCache = {};
+  static const double _emaAlpha = 0.6; // 60% nuevo, 40% anterior
 
   @override
   void initState() {
     super.initState();
     _poseDetector = PoseDetector(options: PoseDetectorOptions());
-    _plankClassifier = PlankClassifier();
+    _wsClient = WebSocketClient();
+    _wsClient.onPrediction = _handlePrediction;
+    _initializeWebSocket();
     _initializeCamera();
-    _initializeClassifier();
   }
 
-  Future<void> _initializeClassifier() async {
-    try {
-      await _plankClassifier.load();
-      setState(() {
-        _currentStatus = "Listo para entrenar";
-      });
-    } catch (e) {
-      print('❌ Error al inicializar clasificador: $e');
-      setState(() {
-        _currentStatus = "Error al cargar modelo";
-      });
+  Future<void> _initializeWebSocket() async {
+    await _wsClient.connect();
+    if (mounted) {
+      setState(() => _currentStatus = "WebSocket conectado");
     }
   }
 
@@ -77,7 +197,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     if (await Permission.camera.request().isGranted) {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        print("No se encontraron cámaras.");
+        print("❌ No se encontraron cámaras.");
         return;
       }
 
@@ -97,20 +217,18 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       if (mounted) {
         setState(() {
           _isCameraInitialized = true;
+          _currentStatus = "Listo para entrenar";
         });
       }
     } else {
-      print("Permiso de cámara denegado.");
+      print("❌ Permiso de cámara denegado.");
     }
   }
 
   InputImage? _inputImageFromCameraImage(CameraImage image) {
     if (_cameraController == null) return null;
 
-    _absoluteImageSize = Size(
-      image.width.toDouble(),
-      image.height.toDouble(),
-    );
+    _absoluteImageSize = Size(image.width.toDouble(), image.height.toDouble());
 
     final camera = _cameraController!.description;
     final sensorOrientation = camera.sensorOrientation;
@@ -150,10 +268,36 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     );
   }
 
+  /// Aplica suavizado EMA (Exponential Moving Average) a los landmarks
+  /// Formula: smoothed = alpha * current + (1 - alpha) * previous
   Map<PoseLandmarkType, PoseLandmark> _smoothPose(
       Map<PoseLandmarkType, PoseLandmark> currentLandmarks) {
-    // Sin suavizado, devolver landmarks originales
-    return currentLandmarks;
+    final Map<PoseLandmarkType, PoseLandmark> smoothed = {};
+
+    currentLandmarks.forEach((type, landmark) {
+      final x = landmark.x;
+      final y = landmark.y;
+
+      if (_smoothCache.containsKey(type)) {
+        final prev = _smoothCache[type]!;
+        final smoothedX = _emaAlpha * x + (1 - _emaAlpha) * prev[0];
+        final smoothedY = _emaAlpha * y + (1 - _emaAlpha) * prev[1];
+        _smoothCache[type] = [smoothedX, smoothedY];
+
+        smoothed[type] = PoseLandmark(
+          type: type,
+          x: smoothedX,
+          y: smoothedY,
+          z: landmark.z,
+          likelihood: landmark.likelihood,
+        );
+      } else {
+        _smoothCache[type] = [x, y];
+        smoothed[type] = landmark;
+      }
+    });
+
+    return smoothed;
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
@@ -178,6 +322,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       if (mounted && poses.isNotEmpty) {
         final pose = poses.first;
 
+        // Aplicar suavizado EMA
         final smoothedLandmarks = _smoothPose(pose.landmarks);
         final smoothedPose = Pose(landmarks: smoothedLandmarks);
 
@@ -191,62 +336,25 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
           if (keypoints != null) {
             _keypointsBuffer.add(keypoints);
 
+            // Cuando el buffer alcanza el tamaño completo (15 frames)
             if (_keypointsBuffer.length >= _bufferSize) {
-              final probabilities =
-                  await _plankClassifier.classify(_keypointsBuffer);
-
-              // --- Ajuste de sensibilidad por clase (como en Python) ---
-              // Construimos mapa {clase: prob}
-              final Map<String, double> rawProbs = {
-                for (int i = 0; i < classLabels.length; i++)
-                  classLabels[i]: probabilities[i]
-              };
-
-              // Aplicar factor de sensibilidad y normalizar
-              final Map<String, double> adjustedProbs = {};
-              double total = 0.0;
-              rawProbs.forEach((label, prob) {
-                final factor = _sensitivityByClass[label] ?? 1.0;
-                final adjusted = prob * factor;
-                adjustedProbs[label] = adjusted;
-                total += adjusted;
-              });
-
-              final Map<String, double> finalProbs =
-                  total > 0.0
-                      ? adjustedProbs.map(
-                          (k, v) => MapEntry(k, v / total),
-                        )
-                      : adjustedProbs;
-
-              // Ordenar por probabilidad descendente
-              final sortedEntries = finalProbs.entries.toList()
-                ..sort((a, b) => b.value.compareTo(a.value));
-
-              final best = sortedEntries.first;
-              final predictedClass = best.key;
-              final bestProb = best.value;
-
-              // Mantener el mapa en orden para mostrar top 4
-              final orderedMap = <String, double>{};
-              for (final e in sortedEntries) {
-                orderedMap[e.key] = e.value;
-              }
-
-              setState(() {
-                _currentPrediction = predictedClass;
-                _currentConfidence = bestProb;
-                _allProbabilities = orderedMap;
-                _currentStatus = predictedClass
-                    .replaceAll('plank_', '')
-                    .replaceAll('_', ' ');
-              });
-
+              // Calcular features
+              final features = _calculateFeatures(_keypointsBuffer);
+              
+              // DEBUG: Mostrar primeros 5 valores para verificar que cambian
+              print('🔢 Features calculados (primeros 5): ${features.take(5).toList()}');
+              
+              // ENVIAR a la API
+              _wsClient.sendFeatures(features);
+              print('📤 Features enviados. Buffer: ${_keypointsBuffer.length}/$_bufferSize frames');
+              
+              // LIMPIAR el buffer completamente (RESET)
               _keypointsBuffer.clear();
+              print('♻️ Buffer limpiado. Listo para acumular nuevamente.');
             }
           }
         } catch (e) {
-          // Error silencioso, continuar
+          print('❌ Error al procesar keypoints: $e');
         }
       } else if (poses.isEmpty) {
         _keypointsBuffer.clear();
@@ -260,35 +368,13 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
         }
       }
     } catch (e) {
-      print("Error al procesar la imagen: $e");
+      print("❌ Error al procesar imagen: $e");
     } finally {
       _isProcessing = false;
     }
   }
 
-  @override
-  void dispose() {
-    _cameraController?.stopImageStream();
-    _cameraController?.dispose();
-    _poseDetector.close();
-    _plankClassifier.dispose();
-    super.dispose();
-  }
-
-  Future<void> _switchCamera() async {
-    await _cameraController?.stopImageStream();
-    await _cameraController?.dispose();
-    _keypointsBuffer.clear();
-    setState(() {
-      _isCameraInitialized = false;
-      _cameraIndex = _cameraIndex == 0 ? 1 : 0;
-      _currentStatus = "Cambiando cámara...";
-    });
-    await _initializeCamera();
-  }
-
-  /// Convierte landmarks al formato Map<String, List<double>>,
-  /// NORMALIZANDO x,y a [0,1] como en MediaPipe Python.
+  /// Extrae 5 landmarks clave y normaliza a [0,1]
   Map<String, List<double>>? _landmarksToKeypoints(
       Map<PoseLandmarkType, PoseLandmark> landmarks) {
     try {
@@ -298,20 +384,19 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       final elbowL = landmarks[PoseLandmarkType.leftElbow];
       final wristL = landmarks[PoseLandmarkType.leftWrist];
 
-      if (shoulderL == null ||
-          hipL == null ||
-          ankleL == null ||
-          elbowL == null ||
-          wristL == null) {
+      if (shoulderL == null || hipL == null || ankleL == null || 
+          elbowL == null || wristL == null) {
         return null;
       }
 
-      const minConfidence = 0.5;
+      const minConfidence = 0.70; // Aumentado para mayor precisión
       if (shoulderL.likelihood < minConfidence ||
           hipL.likelihood < minConfidence ||
           ankleL.likelihood < minConfidence ||
           elbowL.likelihood < minConfidence ||
           wristL.likelihood < minConfidence) {
+        // Keypoint con baja confianza - no se agrega al buffer ni se envía a la API
+        print('⚠️ Frame rechazado: keypoint con confianza < 0.70');
         return null;
       }
 
@@ -332,6 +417,110 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     } catch (e) {
       return null;
     }
+  }
+
+  /// Calcula el ángulo entre tres puntos (en grados)
+  double _calculateAngle(List<double> a, List<double> b, List<double> c) {
+    final radians = atan2(c[1] - b[1], c[0] - b[0]) - 
+                   atan2(a[1] - b[1], a[0] - b[0]);
+    var angle = radians.abs() * 180.0 / pi;
+    if (angle > 180.0) {
+      angle = 360 - angle;
+    }
+    return angle;
+  }
+
+  /// Calcula 25 features a partir del buffer de keypoints
+  /// Igual que Python: 5 features derivadas × 5 estadísticas
+  List<double> _calculateFeatures(List<Map<String, List<double>>> buffer) {
+    // 1. Calcular las 5 FEATURES DERIVADAS para cada frame (igual que Python)
+    final List<List<double>> derivedFeaturesPerFrame = [];
+    
+    for (final frame in buffer) {
+      final shoulder = frame['shoulder_l']!;
+      final hip = frame['hip_l']!;
+      final ankle = frame['ankle_l']!;
+      final elbow = frame['elbow_l']!;
+      final wrist = frame['wrist_l']!;
+
+      // Calcular las 5 features (IGUAL QUE PYTHON):
+      final bodyAngle = _calculateAngle(shoulder, hip, ankle);
+      final hipShoulderVerticalDiff = hip[1] - shoulder[1];
+      final hipAnkleVerticalDiff = hip[1] - ankle[1];
+      final shoulderElbowAngle = _calculateAngle(hip, shoulder, elbow);
+      final wristShoulderHipAngle = _calculateAngle(wrist, shoulder, hip);
+
+      derivedFeaturesPerFrame.add([
+        bodyAngle,
+        hipShoulderVerticalDiff,
+        hipAnkleVerticalDiff,
+        shoulderElbowAngle,
+        wristShoulderHipAngle,
+      ]);
+    }
+
+    // 2. Calcular estadísticas de cada feature (igual que Python)
+    final List<double> features = [];
+    
+    // Para cada una de las 5 features
+    for (int featureIdx = 0; featureIdx < 5; featureIdx++) {
+      // Extraer todos los valores de esa feature en todos los frames
+      final values = derivedFeaturesPerFrame
+          .map((frame) => frame[featureIdx])
+          .toList();
+
+      // Calcular estadísticas
+      final mean = values.fold(0.0, (a, b) => a + b) / values.length;
+      final variance = values.fold(0.0, (a, b) => a + pow(b - mean, 2)) /
+          values.length;
+      final std = sqrt(variance);
+      final min = values.fold(values[0], (a, b) => a < b ? a : b);
+      final max = values.fold(values[0], (a, b) => a > b ? a : b);
+      final range = max - min;
+
+      // Agregar en el mismo orden que Python: mean, std, min, max, range
+      features.addAll([mean, std, min, max, range]);
+    }
+
+    return features; // 5 features × 5 stats = 25 valores
+  }
+
+  void _handlePrediction(Map<String, double> probabilities) {
+    if (!mounted) return;
+
+    final sortedEntries = probabilities.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final best = sortedEntries.first;
+
+    setState(() {
+      _currentPrediction = best.key;
+      _currentConfidence = best.value;
+      _allProbabilities = Map.fromEntries(sortedEntries);
+      _currentStatus =
+          best.key.replaceAll('plank_', '').replaceAll('_', ' ');
+    });
+  }
+
+  @override
+  void dispose() {
+    _cameraController?.stopImageStream();
+    _cameraController?.dispose();
+    _poseDetector.close();
+    _wsClient.disconnect();
+    super.dispose();
+  }
+
+  Future<void> _switchCamera() async {
+    await _cameraController?.stopImageStream();
+    await _cameraController?.dispose();
+    _keypointsBuffer.clear();
+    setState(() {
+      _isCameraInitialized = false;
+      _cameraIndex = _cameraIndex == 0 ? 1 : 0;
+      _currentStatus = "Cambiando cámara...";
+    });
+    await _initializeCamera();
   }
 
   Widget _buildFeedbackPanel() {
@@ -403,7 +592,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Analizando: ${((_keypointsBuffer.length / _bufferSize) * 100).toStringAsFixed(0)}%',
+            'Buffer: ${_keypointsBuffer.length}/$_bufferSize',
             style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
           if (_allProbabilities.isNotEmpty) ...[
@@ -418,9 +607,8 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
             ),
             const SizedBox(height: 8),
             ..._allProbabilities.entries.take(4).map((entry) {
-              final displayName = entry.key
-                  .replaceAll('plank_', '')
-                  .replaceAll('_', ' ');
+              final displayName =
+                  entry.key.replaceAll('plank_', '').replaceAll('_', ' ');
               final percentage = (entry.value * 100).toStringAsFixed(0);
               return Padding(
                 padding: const EdgeInsets.only(bottom: 4),

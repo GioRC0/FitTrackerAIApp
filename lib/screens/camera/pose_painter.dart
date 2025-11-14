@@ -43,21 +43,13 @@ class PosePainter extends CustomPainter {
       // Dibujar las líneas primero (fondo)
       _drawPoseSkeleton(canvas, pose, size, leftPaint, rightPaint, centerPaint);
       
-      // Puntos a mostrar: solo muñecas para manos y nariz para cabeza
+      // Puntos ESENCIALES a mostrar (solo para plancha: 5 puntos por lado)
       final landmarksToShow = [
-        PoseLandmarkType.nose,          // 1 punto para cabeza
-        PoseLandmarkType.leftWrist,     // 1 punto para mano izquierda
-        PoseLandmarkType.rightWrist,    // 1 punto para mano derecha
         PoseLandmarkType.leftShoulder,
-        PoseLandmarkType.rightShoulder,
-        PoseLandmarkType.leftElbow,
-        PoseLandmarkType.rightElbow,
         PoseLandmarkType.leftHip,
-        PoseLandmarkType.rightHip,
-        PoseLandmarkType.leftKnee,
-        PoseLandmarkType.rightKnee,
         PoseLandmarkType.leftAnkle,
-        PoseLandmarkType.rightAnkle,
+        PoseLandmarkType.leftElbow,
+        PoseLandmarkType.leftWrist,
       ];
       
       // Dibujar solo los puntos seleccionados

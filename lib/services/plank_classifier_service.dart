@@ -108,8 +108,33 @@ class PlankClassifier {
   Future<List<double>> classify(List<Map<String, List<double>>> buffer, {bool debug = false}) async {
     if (_interpreter == null) await load();
     List<List<double>> featuresBuffer = buffer.map(extractFeatures).toList();
+    
+    // DEBUG: Imprimir features del primer frame
+    if (featuresBuffer.isNotEmpty) {
+      print('📊 Features from first frame:');
+      final features = featuresBuffer[0];
+      print('  body_angle: ${features[0].toStringAsFixed(4)}');
+      print('  hip_shoulder_vertical_diff: ${features[1].toStringAsFixed(4)}');
+      print('  hip_ankle_vertical_diff: ${features[2].toStringAsFixed(4)}');
+      print('  shoulder_elbow_angle: ${features[3].toStringAsFixed(4)}');
+      print('  wrist_shoulder_hip_angle: ${features[4].toStringAsFixed(4)}');
+    }
+    
     List<double> stats = computeStats(featuresBuffer);
+    
+    // DEBUG: Imprimir stats computados
+    print('📈 Computed stats (25 values):');
+    for (int i = 0; i < 5; i++) {
+      final featureNames = ['body_angle', 'hip_shoulder_vertical_diff', 'hip_ankle_vertical_diff', 'shoulder_elbow_angle', 'wrist_shoulder_hip_angle'];
+      print('  ${featureNames[i]}: mean=${stats[i*5].toStringAsFixed(4)}, std=${stats[i*5+1].toStringAsFixed(4)}, min=${stats[i*5+2].toStringAsFixed(4)}, max=${stats[i*5+3].toStringAsFixed(4)}, range=${stats[i*5+4].toStringAsFixed(4)}');
+    }
+    
     List<double> norm = normalize(stats);
+    
+    // DEBUG: Imprimir features normalizados
+    print('🔢 Normalized features (after StandardScaler):');
+    print('  ${norm.map((v) => v.toStringAsFixed(4)).join(', ')}');
+    
     return predict(norm);
   }
 
