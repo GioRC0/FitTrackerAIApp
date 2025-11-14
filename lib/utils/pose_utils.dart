@@ -1,5 +1,4 @@
 import 'dart:math';
-import 'dart:ui';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
 /// Utilidades para cálculos de pose y ángulos
@@ -31,8 +30,8 @@ class PoseUtils {
   /// Extrae las 5 features básicas de un frame de pose
   /// Retorna: [body_angle, hip_shoulder_vertical_diff, hip_ankle_vertical_diff, 
   ///          shoulder_elbow_angle, wrist_shoulder_hip_angle]
-  /// IMPORTANTE: Normaliza las coordenadas a rango [0, 1] como MediaPipe en Python
-  static List<double>? extractPlankFeatures(Map<PoseLandmarkType, PoseLandmark> landmarks, {Size? imageSize}) {
+  /// Google ML Kit ya devuelve coordenadas normalizadas [0, 1] igual que MediaPipe Python
+  static List<double>? extractPlankFeatures(Map<PoseLandmarkType, PoseLandmark> landmarks) {
     try {
       // Obtener landmarks necesarios
       final shoulderL = landmarks[PoseLandmarkType.leftShoulder];
@@ -47,31 +46,16 @@ class PoseUtils {
         return null;
       }
 
-      // NORMALIZAR coordenadas si tenemos el tamaño de imagen
-      // Google ML Kit da coordenadas en píxeles, pero Python MediaPipe usa [0, 1]
-      PoseLandmark normalizeLandmark(PoseLandmark lm) {
-        if (imageSize == null) return lm;
-        return PoseLandmark(
-          type: lm.type,
-          x: lm.x / imageSize.width,
-          y: lm.y / imageSize.height,
-          z: lm.z,
-          likelihood: lm.likelihood,
-        );
-      }
+      // Google ML Kit ya devuelve coordenadas normalizadas [0, 1] como MediaPipe
+      // NO necesitamos normalizar manualmente
+      // Las coordenadas x, y ya están en el rango [0, 1]
 
-      final shoulderNorm = normalizeLandmark(shoulderL);
-      final hipNorm = normalizeLandmark(hipL);
-      final ankleNorm = normalizeLandmark(ankleL);
-      final elbowNorm = normalizeLandmark(elbowL);
-      final wristNorm = normalizeLandmark(wristL);
-
-      // Calcular features con coordenadas normalizadas
-      final bodyAngle = calculateAngle(shoulderNorm, hipNorm, ankleNorm);
-      final hipShoulderVerticalDiff = hipNorm.y - shoulderNorm.y;
-      final hipAnkleVerticalDiff = hipNorm.y - ankleNorm.y;
-      final shoulderElbowAngle = calculateAngle(hipNorm, shoulderNorm, elbowNorm);
-      final wristShoulderHipAngle = calculateAngle(wristNorm, shoulderNorm, hipNorm);
+      // Calcular features directamente (coordenadas ya normalizadas)
+      final bodyAngle = calculateAngle(shoulderL, hipL, ankleL);
+      final hipShoulderVerticalDiff = hipL.y - shoulderL.y;
+      final hipAnkleVerticalDiff = hipL.y - ankleL.y;
+      final shoulderElbowAngle = calculateAngle(hipL, shoulderL, elbowL);
+      final wristShoulderHipAngle = calculateAngle(wristL, shoulderL, hipL);
 
       return [
         bodyAngle,

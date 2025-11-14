@@ -43,8 +43,27 @@ class PosePainter extends CustomPainter {
       // Dibujar las líneas primero (fondo)
       _drawPoseSkeleton(canvas, pose, size, leftPaint, rightPaint, centerPaint);
       
-      // Dibujar los puntos encima (foreground)
-      pose.landmarks.forEach((_, landmark) {
+      // Puntos a mostrar: solo muñecas para manos y nariz para cabeza
+      final landmarksToShow = [
+        PoseLandmarkType.nose,          // 1 punto para cabeza
+        PoseLandmarkType.leftWrist,     // 1 punto para mano izquierda
+        PoseLandmarkType.rightWrist,    // 1 punto para mano derecha
+        PoseLandmarkType.leftShoulder,
+        PoseLandmarkType.rightShoulder,
+        PoseLandmarkType.leftElbow,
+        PoseLandmarkType.rightElbow,
+        PoseLandmarkType.leftHip,
+        PoseLandmarkType.rightHip,
+        PoseLandmarkType.leftKnee,
+        PoseLandmarkType.rightKnee,
+        PoseLandmarkType.leftAnkle,
+        PoseLandmarkType.rightAnkle,
+      ];
+      
+      // Dibujar solo los puntos seleccionados
+      pose.landmarks.forEach((type, landmark) {
+        if (!landmarksToShow.contains(type)) return;
+        
         final offset = _translatePoint(landmark, size);
         canvas.drawCircle(offset, 6, pointPaint);
         // Borde blanco para mejor visibilidad

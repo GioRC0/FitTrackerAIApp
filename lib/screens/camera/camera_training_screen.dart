@@ -16,7 +16,7 @@ class CameraTrainingScreen extends StatefulWidget {
 
 class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   late final PoseDetector _poseDetector;
-  late final PlankClassifierService _plankClassifier;
+  late final PlankClassifier _plankClassifier;
   CameraController? _cameraController;
   List<Pose> _poses = [];
   bool _isCameraInitialized = false;
@@ -26,28 +26,43 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Size _absoluteImageSize = Size.zero; // Variable para guardar el tamaño de la imagen
   
   // Variables para clasificación de plank
-  PlankPrediction? _currentPrediction;
+  String _currentPrediction = ""; // Usado en lógica de clasificación
+  double _currentConfidence = 0.0; // Usado en _buildFeedbackPanel
+  Map<String, double> _allProbabilities = {}; // Usado en _buildFeedbackPanel
   String _currentStatus = "Iniciando...";
+  
+  // Buffer de keypoints para clasificación (30 frames)
+  final List<Map<String, List<double>>> _keypointsBuffer = [];
+  static const int _bufferSize = 30;
   
   // Control de tiempo para evitar sobrecarga
   DateTime _lastProcessedTime = DateTime.now();
-  static const _processingInterval = Duration(milliseconds: 100); // Procesar cada 100ms (~10 FPS)
+  static const _processingInterval = Duration(milliseconds: 150); // Procesar cada 150ms (~7 FPS, más estable)
+  
+  // Suavizado de poses (Exponential Moving Average)
+  Map<PoseLandmarkType, PoseLandmark>? _smoothedLandmarks;
+  static const double _smoothingAlpha = 0.5; // 50% actual + 50% anterior: balance entre reactividad y estabilidad
 
   @override
   void initState() {
     super.initState();
     _poseDetector = PoseDetector(options: PoseDetectorOptions());
-    _plankClassifier = PlankClassifierService();
+    _plankClassifier = PlankClassifier();
     _initializeCamera();
     _initializeClassifier();
   }
 
   Future<void> _initializeClassifier() async {
     try {
-      await _plankClassifier.initialize();
-      print('Clasificador de Plank inicializado');
+      await _plankClassifier.load();
+      // 🐛 DEBUG: Descomentar para probar con frame manual
+      // await _plankClassifier.testWithManualFrame();
+      
+      setState(() {
+        _currentStatus = "Listo para entrenar";
+      });
     } catch (e) {
-      print('Error al inicializar clasificador: $e');
+      print('❌ Error al inicializar clasificador: $e');
       setState(() {
         _currentStatus = "Error al cargar modelo";
       });
@@ -135,6 +150,38 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     );
   }
 
+  /// Suaviza las poses usando Exponential Moving Average (EMA)
+  Map<PoseLandmarkType, PoseLandmark> _smoothPose(Map<PoseLandmarkType, PoseLandmark> currentLandmarks) {
+    if (_smoothedLandmarks == null) {
+      // Primera vez: inicializar con los valores actuales
+      _smoothedLandmarks = Map.from(currentLandmarks);
+      return _smoothedLandmarks!;
+    }
+
+    // Aplicar EMA: smoothed = alpha * current + (1 - alpha) * previous
+    final smoothed = <PoseLandmarkType, PoseLandmark>{};
+    for (final entry in currentLandmarks.entries) {
+      final type = entry.key;
+      final current = entry.value;
+      final previous = _smoothedLandmarks![type];
+
+      if (previous != null) {
+        smoothed[type] = PoseLandmark(
+          type: type,
+          x: _smoothingAlpha * current.x + (1 - _smoothingAlpha) * previous.x,
+          y: _smoothingAlpha * current.y + (1 - _smoothingAlpha) * previous.y,
+          z: _smoothingAlpha * current.z + (1 - _smoothingAlpha) * previous.z,
+          likelihood: current.likelihood,
+        );
+      } else {
+        smoothed[type] = current;
+      }
+    }
+
+    _smoothedLandmarks = smoothed;
+    return smoothed;
+  }
+
   Future<void> _processCameraImage(CameraImage image) async {
     if (_isProcessing) return;
     
@@ -157,31 +204,69 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
 
     try {
       final poses = await _poseDetector.processImage(inputImage);
-      if (mounted) {
+      if (mounted && poses.isNotEmpty) {
+        final pose = poses.first;
+        
+        // Suavizar landmarks para reducir tambaleo visual y de clasificación
+        final smoothedLandmarks = _smoothPose(pose.landmarks);
+        
+        // Crear un Pose suavizado para el painter
+        final smoothedPose = Pose(landmarks: smoothedLandmarks);
+        
         setState(() {
-          _poses = poses;
+          _poses = [smoothedPose]; // Mostrar pose suavizada
         });
 
-        // Procesar con el clasificador si hay poses detectadas
-        if (poses.isNotEmpty && _plankClassifier.isInitialized) {
-          final pose = poses.first;
-          final prediction = _plankClassifier.processFrame(pose.landmarks, imageSize: _absoluteImageSize);
+        // Procesar con el clasificador
+        try {
+          // Convertir landmarks a formato Map<String, List<double>>
+          final keypoints = _landmarksToKeypoints(smoothedLandmarks);
           
-          if (prediction != null) {
-            setState(() {
-              _currentPrediction = prediction;
-              _currentStatus = prediction.className.replaceAll('plank_', '').replaceAll('_', ' ');
-            });
+          if (keypoints != null) {
+            _keypointsBuffer.add(keypoints);
+            
+            // Si tenemos suficientes frames, clasificar
+            if (_keypointsBuffer.length >= _bufferSize) {
+              final probabilities = await _plankClassifier.classify(_keypointsBuffer);
+              
+              // Encontrar la clase con mayor probabilidad
+              int maxIdx = 0;
+              double maxProb = probabilities[0];
+              for (int i = 1; i < probabilities.length; i++) {
+                if (probabilities[i] > maxProb) {
+                  maxProb = probabilities[i];
+                  maxIdx = i;
+                }
+              }
+              
+              final predictedClass = classLabels[maxIdx];
+              
+              setState(() {
+                _currentPrediction = predictedClass;
+                _currentConfidence = maxProb;
+                _allProbabilities = {
+                  for (int i = 0; i < classLabels.length; i++) classLabels[i]: probabilities[i]
+                };
+                _currentStatus = predictedClass.replaceAll('plank_', '').replaceAll('_', ' ');
+              });
+              
+              // Limpiar buffer después de clasificar
+              _keypointsBuffer.clear();
+            }
           }
-        } else if (poses.isEmpty) {
-          // No se detecta persona
-          _plankClassifier.clearBuffer();
-          if (_currentStatus != "No se detecta cuerpo") {
-            setState(() {
-              _currentStatus = "No se detecta cuerpo";
-              _currentPrediction = null;
-            });
-          }
+        } catch (e) {
+          // Error silencioso, continuar procesando
+        }
+      } else if (poses.isEmpty) {
+        // No se detecta persona
+        _keypointsBuffer.clear();
+        _smoothedLandmarks = null; // Resetear suavizado
+        if (_currentStatus != "No se detecta cuerpo") {
+          setState(() {
+            _currentStatus = "No se detecta cuerpo";
+            _currentPrediction = "";
+            _currentConfidence = 0.0;
+          });
         }
       }
     } catch (e) {
@@ -203,13 +288,60 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Future<void> _switchCamera() async {
     await _cameraController?.stopImageStream();
     await _cameraController?.dispose();
-    _plankClassifier.clearBuffer();
+    _keypointsBuffer.clear();
     setState(() {
       _isCameraInitialized = false;
       _cameraIndex = _cameraIndex == 0 ? 1 : 0;
       _currentStatus = "Cambiando cámara...";
     });
     await _initializeCamera();
+  }
+
+  /// Convierte landmarks de Google ML Kit al formato Map<String, List<double>>
+  /// Filtra por confianza mínima para reducir ruido
+  Map<String, List<double>>? _landmarksToKeypoints(Map<PoseLandmarkType, PoseLandmark> landmarks) {
+    try {
+      final shoulderL = landmarks[PoseLandmarkType.leftShoulder];
+      final hipL = landmarks[PoseLandmarkType.leftHip];
+      final ankleL = landmarks[PoseLandmarkType.leftAnkle];
+      final elbowL = landmarks[PoseLandmarkType.leftElbow];
+      final wristL = landmarks[PoseLandmarkType.leftWrist];
+
+      if (shoulderL == null || hipL == null || ankleL == null || 
+          elbowL == null || wristL == null) {
+        return null;
+      }
+
+      // ✅ Filtrar por confianza mínima (MediaPipe likelihood)
+      const minConfidence = 0.5;
+      if (shoulderL.likelihood < minConfidence || 
+          hipL.likelihood < minConfidence ||
+          ankleL.likelihood < minConfidence ||
+          elbowL.likelihood < minConfidence ||
+          wristL.likelihood < minConfidence) {
+        return null;
+      }
+
+      // ✅ Validar que las coordenadas estén en el rango esperado [0, 1]
+      bool isValidCoord(double val) => val >= 0.0 && val <= 1.0;
+      if (!isValidCoord(shoulderL.x) || !isValidCoord(shoulderL.y) ||
+          !isValidCoord(hipL.x) || !isValidCoord(hipL.y) ||
+          !isValidCoord(ankleL.x) || !isValidCoord(ankleL.y) ||
+          !isValidCoord(elbowL.x) || !isValidCoord(elbowL.y) ||
+          !isValidCoord(wristL.x) || !isValidCoord(wristL.y)) {
+        return null;
+      }
+
+      return {
+        'shoulder_l': [shoulderL.x, shoulderL.y],
+        'hip_l': [hipL.x, hipL.y],
+        'ankle_l': [ankleL.x, ankleL.y],
+        'elbow_l': [elbowL.x, elbowL.y],
+        'wrist_l': [wristL.x, wristL.y],
+      };
+    } catch (e) {
+      return null;
+    }
   }
 
   /// Construye el panel de feedback en tiempo real (replica la UI de Python)
@@ -264,8 +396,8 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
               ),
               const SizedBox(width: 12),
               Text(
-                _currentPrediction != null 
-                    ? '${(_currentPrediction!.confidence * 100).toStringAsFixed(0)}%'
+                _currentConfidence > 0.0
+                    ? '${(_currentConfidence * 100).toStringAsFixed(0)}%'
                     : '--',
                 style: const TextStyle(
                   color: Colors.white,
@@ -279,7 +411,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
           
           // Barra de progreso del buffer
           LinearProgressIndicator(
-            value: _plankClassifier.bufferProgress,
+            value: _keypointsBuffer.length / _bufferSize,
             backgroundColor: Colors.grey[800],
             valueColor: AlwaysStoppedAnimation<Color>(
               Theme.of(context).primaryColor,
@@ -287,12 +419,12 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Analizando: ${(_plankClassifier.bufferProgress * 100).toStringAsFixed(0)}%',
+            'Analizando: ${((_keypointsBuffer.length / _bufferSize) * 100).toStringAsFixed(0)}%',
             style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
           
           // Probabilidades de todas las clases
-          if (_currentPrediction != null) ...[
+          if (_allProbabilities.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text(
               'DETALLE:',
@@ -303,7 +435,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            ..._currentPrediction!.allProbabilities.entries.take(4).map((entry) {
+            ..._allProbabilities.entries.take(4).map((entry) {
               final displayName = entry.key.replaceAll('plank_', '').replaceAll('_', ' ');
               final percentage = (entry.value * 100).toStringAsFixed(0);
               return Padding(

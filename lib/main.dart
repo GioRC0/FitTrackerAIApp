@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'config/app_colors.dart';
-//import 'screens/main_screen.dart';
 import 'package:intl/date_symbol_data_local.dart';
-import 'screens/auth/login_screen.dart';
-import 'screens/auth/register_screen.dart';
+import 'screens/splash_screen.dart';
 
 void main() async{
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,35 +24,11 @@ class MyApp extends StatelessWidget {
       // Tema OSCURO
       darkTheme: _darkTheme, 
       
-      // La aplicación inicia en modo CLARO por defecto (tal como lo especificaste)
+      // La aplicación inicia en modo CLARO por defecto
       themeMode: ThemeMode.light, 
       
-      home: Builder(
-        builder: (BuildContext navigatorContext) {
-          return LoginScreen(
-            onLogin: (context, email, password) {
-              // La lógica de login ahora está dentro de LoginScreen.
-              // Esta función de onLogin ya no se usa aquí.
-              // Dejar el onLogin con un cuerpo vacío o modificar la estructura. 
-              // Por simplicidad, por ahora, usaremos push para simular la navegación.
-            },
-            onRegister: () {
-              Navigator.of(navigatorContext).push(
-                MaterialPageRoute(
-                  builder: (context) => RegisterScreen(
-                    onBack: () => Navigator.of(context).pop(),
-                  ),
-                ),
-              );
-            },
-        onForgotPassword: () {
-          // TODO: Mostrar diálogo o navegar a la pantalla de Olvidé Contraseña
-          ScaffoldMessenger.of(navigatorContext).showSnackBar(
-            const SnackBar(content: Text('Funcionalidad de Olvidé Contraseña pendiente')),
-          );
-        },
-      );
-      })  // Reemplaza con tu widget inicial
+      // Inicia con SplashScreen que verificará la sesión
+      home: const SplashScreen(),
     );
   }
 }

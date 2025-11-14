@@ -181,5 +181,45 @@ Future<TokenDto> verifyCode({
   }
 }
 
-  // Otros endpoints irán aquí: register, sendCode, verify, etc.
+  // Endpoint de REFRESH TOKEN: POST /api/auth/refresh
+  Future<TokenDto> refreshToken({required String refreshToken}) async {
+    final url = Uri.parse('$_baseUrl/refresh');
+
+    try {
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'refreshToken': refreshToken}),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonResponse = jsonDecode(response.body);
+        return TokenDto.fromJson(jsonResponse);
+      } 
+      else if (response.statusCode == 401) {
+        // Token inválido o expirado - forzar re-login
+        throw ApiException('Sesión expirada. Por favor inicia sesión nuevamente.', statusCode: 401);
+      } 
+      else if (response.statusCode >= 400 && response.statusCode < 500) {
+        final errorBody = jsonDecode(response.body);
+        final errorMessage = errorBody['message'] ?? 'Error al refrescar token.';
+        throw ApiException(errorMessage, statusCode: response.statusCode);
+      } 
+      else {
+        throw ApiException(
+          'Error del servidor al refrescar token. Código: ${response.statusCode}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is http.ClientException) {
+        throw ApiException('No se pudo conectar al servidor.');
+      }
+      rethrow;
+    }
+  }
+
+  // Otros endpoints irán aquí: logout, getProfile, etc.
 }
