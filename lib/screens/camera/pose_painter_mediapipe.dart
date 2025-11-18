@@ -19,59 +19,98 @@ class PosePainterMediaPipe extends CustomPainter {
 
     final pose = poses.first;
 
-    // Solo mostrar 5 keypoints esenciales para plancha (lado izquierdo)
-    final landmarksToShow = [
+    // Dibujar todas las conexiones del esqueleto
+    _drawAllConnections(canvas, size, pose);
+    
+    // Dibujar todos los landmarks principales
+    _drawAllLandmarks(canvas, size, pose);
+  }
+  
+  void _drawAllLandmarks(Canvas canvas, Size size, MediaPipePose pose) {
+    // Landmarks principales del cuerpo
+    final mainLandmarks = [
+      // Cara
+      MediaPipePoseLandmark.nose,
+      // Hombros
       MediaPipePoseLandmark.leftShoulder,
-      MediaPipePoseLandmark.leftHip,
-      MediaPipePoseLandmark.leftAnkle,
+      MediaPipePoseLandmark.rightShoulder,
+      // Codos
       MediaPipePoseLandmark.leftElbow,
+      MediaPipePoseLandmark.rightElbow,
+      // Muñecas
       MediaPipePoseLandmark.leftWrist,
+      MediaPipePoseLandmark.rightWrist,
+      // Caderas
+      MediaPipePoseLandmark.leftHip,
+      MediaPipePoseLandmark.rightHip,
+      // Rodillas
+      MediaPipePoseLandmark.leftKnee,
+      MediaPipePoseLandmark.rightKnee,
+      // Tobillos
+      MediaPipePoseLandmark.leftAnkle,
+      MediaPipePoseLandmark.rightAnkle,
     ];
 
     final paint = Paint()
       ..style = PaintingStyle.fill
-      ..strokeWidth = 4.0
-      ..color = Colors.greenAccent;
+      ..strokeWidth = 4.0;
 
-    // Dibujar puntos clave
-    for (final landmarkIndex in landmarksToShow) {
+    for (final landmarkIndex in mainLandmarks) {
       final landmark = pose.getLandmark(landmarkIndex);
       if (landmark == null) continue;
 
-      final x = _translateX(landmark.x, size);
-      final y = _translateY(landmark.y, size);
+      final point = _translatePoint(landmark.x, landmark.y, size);
 
       // Solo dibujar si tiene buena confianza
       if (landmark.likelihood >= 0.5) {
-        canvas.drawCircle(
-          Offset(x, y),
-          8.0,
-          paint,
-        );
+        // Punto principal
+        paint.color = Colors.greenAccent;
+        canvas.drawCircle(point, 6.0, paint);
 
-        // Dibujar círculo de confianza
+        // Círculo de confianza
         final confidencePaint = Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2.0
           ..color = _getConfidenceColor(landmark.likelihood);
 
-        canvas.drawCircle(
-          Offset(x, y),
-          12.0,
-          confidencePaint,
-        );
+        canvas.drawCircle(point, 10.0, confidencePaint);
       }
     }
+  }
+  
+  void _drawAllConnections(Canvas canvas, Size size, MediaPipePose pose) {
+    // Lista de conexiones del esqueleto completo
+    final connections = [
+      // Torso
+      [MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.rightShoulder],
+      [MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.leftHip],
+      [MediaPipePoseLandmark.rightShoulder, MediaPipePoseLandmark.rightHip],
+      [MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.rightHip],
+      
+      // Brazo izquierdo
+      [MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.leftElbow],
+      [MediaPipePoseLandmark.leftElbow, MediaPipePoseLandmark.leftWrist],
+      
+      // Brazo derecho
+      [MediaPipePoseLandmark.rightShoulder, MediaPipePoseLandmark.rightElbow],
+      [MediaPipePoseLandmark.rightElbow, MediaPipePoseLandmark.rightWrist],
+      
+      // Pierna izquierda
+      [MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.leftKnee],
+      [MediaPipePoseLandmark.leftKnee, MediaPipePoseLandmark.leftAnkle],
+      
+      // Pierna derecha
+      [MediaPipePoseLandmark.rightHip, MediaPipePoseLandmark.rightKnee],
+      [MediaPipePoseLandmark.rightKnee, MediaPipePoseLandmark.rightAnkle],
+      
+      // Cara
+      [MediaPipePoseLandmark.nose, MediaPipePoseLandmark.leftShoulder],
+      [MediaPipePoseLandmark.nose, MediaPipePoseLandmark.rightShoulder],
+    ];
 
-    // Dibujar conexiones (líneas entre puntos)
-    _drawConnection(canvas, size, pose, 
-      MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.leftElbow);
-    _drawConnection(canvas, size, pose, 
-      MediaPipePoseLandmark.leftElbow, MediaPipePoseLandmark.leftWrist);
-    _drawConnection(canvas, size, pose, 
-      MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.leftHip);
-    _drawConnection(canvas, size, pose, 
-      MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.leftAnkle);
+    for (final connection in connections) {
+      _drawConnection(canvas, size, pose, connection[0], connection[1]);
+    }
   }
 
   void _drawConnection(
@@ -93,32 +132,40 @@ class PosePainterMediaPipe extends CustomPainter {
       ..color = Colors.greenAccent.withOpacity(0.7);
 
     canvas.drawLine(
-      Offset(_translateX(start.x, size), _translateY(start.y, size)),
-      Offset(_translateX(end.x, size), _translateY(end.y, size)),
+      _translatePoint(start.x, start.y, size),
+      _translatePoint(end.x, end.y, size),
       paint,
     );
   }
 
-  double _translateX(double x, Size size) {
-    if (absoluteImageSize.width == 0) return 0;
+  Offset _translatePoint(double x, double y, Size size) {
+    if (absoluteImageSize.width == 0 || absoluteImageSize.height == 0) {
+      return Offset.zero;
+    }
     
-    // MediaPipe ya da coordenadas absolutas en píxeles
-    final normalizedX = x / absoluteImageSize.width;
+    // La cámara en Android captura en landscape (width > height)
+    // Pero mostramos en portrait (width < height)
+    // MediaPipe devuelve coordenadas en píxeles de la imagen landscape
+    // Para rotar 90° horario: canvas_x = image_y, canvas_y = image_width - image_x
+    
+    final canvasX = y;  // x del canvas = y de la imagen
+    final canvasY = absoluteImageSize.width - x;  // y del canvas = width - x de la imagen
+    
+    // Escalar al tamaño del canvas
+    // El ancho del canvas corresponde al alto de la imagen
+    final scaleX = size.width / absoluteImageSize.height;
+    // El alto del canvas corresponde al ancho de la imagen  
+    final scaleY = size.height / absoluteImageSize.width;
+    
+    final scaledX = canvasX * scaleX;
+    final scaledY = canvasY * scaleY;
     
     // Invertir horizontalmente si es cámara frontal
     final flippedX = cameraLensDirection == CameraLensDirection.front
-        ? size.width - (normalizedX * size.width)
-        : normalizedX * size.width;
+        ? size.width - scaledX
+        : scaledX;
     
-    return flippedX;
-  }
-
-  double _translateY(double y, Size size) {
-    if (absoluteImageSize.height == 0) return 0;
-    
-    // MediaPipe ya da coordenadas absolutas en píxeles
-    final normalizedY = y / absoluteImageSize.height;
-    return normalizedY * size.height;
+    return Offset(flippedX, scaledY);
   }
 
   Color _getConfidenceColor(double confidence) {

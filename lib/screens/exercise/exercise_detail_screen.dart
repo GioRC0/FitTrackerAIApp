@@ -1,28 +1,56 @@
 import 'package:flutter/material.dart';
 import 'package:fitracker_app/models/exercises_dtos.dart';
-import 'package:intl/intl.dart'; // Necesitarás añadir 'intl' a tu pubspec.yaml
+import 'package:fitracker_app/models/exercise_stats.dart';
+import 'package:fitracker_app/services/training_session_service.dart';
+import 'package:intl/intl.dart';
 import 'package:fitracker_app/screens/exercise/pre_training_screen.dart';
+import 'package:fitracker_app/screens/exercise/progress_dashboard_screen.dart';
 
-class ExerciseDetailScreen extends StatelessWidget {
+class ExerciseDetailScreen extends StatefulWidget {
   final ExerciseDto exercise;
 
   const ExerciseDetailScreen({super.key, required this.exercise});
 
-  // --- Datos Harcodeados ---
-  static const weeklyData = {
-    'totalSessions': 5,
-    'totalReps': 125,
-    'avgReps': 25,
-    'bestSession': 30,
-    'improvement': '+15%'
-  };
+  @override
+  State<ExerciseDetailScreen> createState() => _ExerciseDetailScreenState();
+}
 
-  static const recentSessions = [
-    {'date': '2025-10-01', 'reps': 25, 'duration': '5 min', 'form': 'Excelente'},
-    {'date': '2025-09-30', 'reps': 22, 'duration': '4 min', 'form': 'Buena'},
-    {'date': '2025-09-29', 'reps': 28, 'duration': '6 min', 'form': 'Excelente'},
-  ];
-  // -------------------------
+class _ExerciseDetailScreenState extends State<ExerciseDetailScreen> {
+  final TrainingSessionService _sessionService = TrainingSessionService();
+  ExerciseStats? _stats;
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStats();
+  }
+
+  Future<void> _loadStats() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final stats = await _sessionService.getExerciseStats(widget.exercise.id, recentLimit: 5);
+      
+      if (mounted) {
+        setState(() {
+          _stats = stats;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Error al cargar estadísticas';
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,81 +59,188 @@ class ExerciseDetailScreen extends StatelessWidget {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(exercise.name),
+            Text(widget.exercise.name),
             Text(
-              exercise.shortDescription,
+              widget.exercise.shortDescription,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70),
             ),
           ],
         ),
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadStats,
+            tooltip: 'Recargar estadísticas',
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // --- Botón Comenzar Entrenamiento ---
-            ElevatedButton.icon(
-              onPressed: () {
-                // 2. Navega a la pantalla de Pre-entrenamiento
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PreTrainingScreen(exercise: exercise),
-                  ),
-                );
-              },
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Comenzar Entrenamiento'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                backgroundColor: Theme.of(context).primaryColor,
-                foregroundColor: Colors.white,
-              ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _errorMessage != null
+              ? _buildErrorView()
+              : _stats == null
+                  ? _buildNoDataView()
+                  : _buildContentView(),
+    );
+  }
+
+  Widget _buildErrorView() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline, size: 64, color: Colors.grey[400]),
+          const SizedBox(height: 16),
+          Text(
+            _errorMessage!,
+            style: TextStyle(color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _loadStats,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Reintentar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoDataView() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[400]),
+          const SizedBox(height: 16),
+          Text(
+            'No hay datos disponibles',
+            style: TextStyle(color: Colors.grey[600], fontSize: 16),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '¡Comienza tu primera sesión!',
+            style: TextStyle(color: Colors.grey[500], fontSize: 14),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PreTrainingScreen(exercise: widget.exercise),
+                ),
+              );
+            },
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Comenzar Entrenamiento'),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              backgroundColor: Theme.of(context).primaryColor,
+              foregroundColor: Colors.white,
             ),
-            const SizedBox(height: 24),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // --- Resumen de la Semana ---
-            _buildWeeklySummaryCard(context),
-            const SizedBox(height: 24),
+  Widget _buildContentView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // --- Botón Comenzar Entrenamiento ---
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PreTrainingScreen(exercise: widget.exercise),
+                ),
+              ).then((_) => _loadStats()); // Recargar stats al volver
+            },
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Comenzar Entrenamiento'),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              backgroundColor: Theme.of(context).primaryColor,
+              foregroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 24),
 
-            // --- Sesiones Recientes ---
-            _buildRecentSessionsCard(context),
-          ],
-        ),
+          // --- Resumen de la Semana ---
+          _buildWeeklySummaryCard(context),
+          const SizedBox(height: 24),
+
+          // --- Sesiones Recientes ---
+          _buildRecentSessionsCard(context),
+        ],
       ),
     );
   }
 
   Widget _buildWeeklySummaryCard(BuildContext context) {
+    final summary = _stats!.weeklySummary;
+    final improvementText = summary.improvementPercentage >= 0
+        ? '+${summary.improvementPercentage.toStringAsFixed(1)}%'
+        : '${summary.improvementPercentage.toStringAsFixed(1)}%';
+    final improvementColor = summary.improvementPercentage >= 0 ? Colors.green : Colors.red;
+    
+    final isPlank = summary.isPlank;
+    final totalValue = isPlank ? summary.totalSeconds : summary.totalReps;
+    final averageValue = isPlank ? summary.averageSeconds : summary.averageReps;
+    final bestValue = isPlank ? summary.bestSessionSeconds : summary.bestSessionReps;
+    final unit = isPlank ? 's' : 'reps';
+
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () {
-          // TODO: Navegar a la pantalla de progreso detallado
-          print('Ver progreso detallado');
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ProgressDashboardScreen(exercise: widget.exercise),
+            ),
+          );
         },
         child: Column(
           children: [
             ListTile(
-              leading: const Icon(Icons.trending_up, color: Colors.green),
+              leading: Icon(Icons.trending_up, color: improvementColor),
               title: const Text('Resumen de la Semana', style: TextStyle(fontWeight: FontWeight.bold)),
               subtitle: const Text('Toca para ver progreso detallado'),
               trailing: Chip(
-                label: Text(weeklyData['improvement'].toString()),
-                backgroundColor: Colors.green.shade100,
-                labelStyle: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold),
+                label: Text(improvementText),
+                backgroundColor: improvementColor.shade100,
+                labelStyle: TextStyle(color: improvementColor.shade800, fontWeight: FontWeight.bold),
               ),
             ),
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Row(
                 children: [
-                  Expanded(child: _buildStatItem(context, Icons.track_changes, 'Total reps', weeklyData['totalReps'].toString())),
-                  Expanded(child: _buildStatItem(context, Icons.calendar_today, 'Sesiones', weeklyData['totalSessions'].toString())),
+                  Expanded(
+                    child: _buildStatItem(
+                      context,
+                      Icons.track_changes,
+                      isPlank ? 'Total tiempo' : 'Total reps',
+                      '$totalValue $unit',
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildStatItem(
+                      context,
+                      Icons.calendar_today,
+                      'Sesiones',
+                      summary.totalSessions.toString(),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -113,8 +248,22 @@ class ExerciseDetailScreen extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),
               child: Row(
                 children: [
-                  Expanded(child: _buildStatItem(context, Icons.functions, 'Promedio', '${weeklyData['avgReps']} reps')),
-                  Expanded(child: _buildStatItem(context, Icons.emoji_events, 'Mejor sesión', '${weeklyData['bestSession']} reps')),
+                  Expanded(
+                    child: _buildStatItem(
+                      context,
+                      Icons.functions,
+                      'Promedio',
+                      '${averageValue.toStringAsFixed(isPlank ? 0 : 1)} $unit',
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildStatItem(
+                      context,
+                      Icons.emoji_events,
+                      'Mejor sesión',
+                      '$bestValue $unit',
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -141,6 +290,28 @@ class ExerciseDetailScreen extends StatelessWidget {
   }
 
   Widget _buildRecentSessionsCard(BuildContext context) {
+    final sessions = _stats!.recentSessions;
+    
+    if (sessions.isEmpty) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Center(
+            child: Column(
+              children: [
+                Icon(Icons.history, size: 48, color: Colors.grey[400]),
+                const SizedBox(height: 8),
+                Text(
+                  'No hay sesiones recientes',
+                  style: TextStyle(color: Colors.grey[600]),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -149,21 +320,21 @@ class ExerciseDetailScreen extends StatelessWidget {
           children: [
             Text('Sesiones Recientes', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 16),
-            ...recentSessions.map((session) => _buildSessionItem(session)).toList(),
+            ...sessions.map((session) => _buildSessionItem(session)).toList(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildSessionItem(Map<String, dynamic> session) {
-    final date = DateFormat('d MMM y', 'es_ES').format(DateTime.parse(session['date']));
-    final form = session['form'].toString();
+  Widget _buildSessionItem(RecentSession session) {
+    final date = DateFormat('d MMM y', 'es_ES').format(session.date);
+    final qualityLabel = session.qualityLabel;
     
     Color formColor;
     Color formTextColor;
 
-    switch (form) {
+    switch (qualityLabel) {
       case 'Excelente':
         formColor = Colors.green.shade100;
         formTextColor = Colors.green.shade800;
@@ -172,10 +343,23 @@ class ExerciseDetailScreen extends StatelessWidget {
         formColor = Colors.blue.shade100;
         formTextColor = Colors.blue.shade800;
         break;
-      default: // Regular
+      case 'Regular':
         formColor = Colors.yellow.shade100;
         formTextColor = Colors.yellow.shade800;
+        break;
+      case 'Mala':
+        formColor = Colors.red.shade100;
+        formTextColor = Colors.red.shade800;
+        break;
+      default:
+        formColor = Colors.grey.shade100;
+        formTextColor = Colors.grey.shade800;
     }
+
+    final isPlank = session.seconds > 0;
+    final performanceText = isPlank
+        ? '${session.seconds}s • ${session.duration}'
+        : '${session.reps} reps • ${session.duration}';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
@@ -188,18 +372,35 @@ class ExerciseDetailScreen extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(date, style: const TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                Text('${session['reps']} reps • ${session['duration']}', style: TextStyle(color: Colors.grey.shade600)),
-              ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(date, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text(
+                    performanceText,
+                    style: TextStyle(color: Colors.grey[600]),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Técnica: ${session.techniquePercentage.toStringAsFixed(1)}%',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[500],
+                    ),
+                  ),
+                ],
+              ),
             ),
             Chip(
-              label: Text(form),
+              label: Text(qualityLabel),
               backgroundColor: formColor,
-              labelStyle: TextStyle(color: formTextColor, fontWeight: FontWeight.bold, fontSize: 12),
+              labelStyle: TextStyle(
+                color: formTextColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
             ),
           ],
         ),

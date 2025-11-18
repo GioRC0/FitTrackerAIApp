@@ -1,14 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:fitracker_app/models/user_dtos.dart';
-
-// La URL base de tu API de .NET
-// IMPORTANTE: Si estás usando un emulador de Android y tu API corre en tu PC (localhost),
-// debes usar la IP 10.0.2.2.
-const String _baseUrl = 'http://10.0.2.2:5180/api/auth'; 
-
-// Si estás usando iOS Simulator o un dispositivo físico, usa tu IP de red local (ej. 192.168.1.XX:5000)
-// const String _baseUrl = 'http://192.168.1.XX:5000/api/auth'; 
+import 'package:fitracker_app/config/api_config.dart'; 
 
 
 class ApiException implements Exception {
@@ -29,7 +22,7 @@ class ApiService {
     required String password,
   }) async {
     final loginDto = LoginDto(email: email, password: password);
-    final url = Uri.parse('$_baseUrl/login');
+    final url = Uri.parse('${ApiConfig.authBaseUrl}/login');
 
     try {
       final response = await http.post(
@@ -74,7 +67,7 @@ class ApiService {
 Future<TokenDto> register({
   required RegisterDto registerDto,
 }) async {
-  final url = Uri.parse('$_baseUrl/register');
+  final url = Uri.parse('${ApiConfig.authBaseUrl}/register');
 
   try {
     final response = await http.post(
@@ -113,7 +106,7 @@ Future<TokenDto> register({
 
 // Endpoint para reenviar código de verificación
 Future<void> sendVerificationCode({required String email}) async {
-  final url = Uri.parse('$_baseUrl/send-verification-code');
+  final url = Uri.parse('${ApiConfig.authBaseUrl}/send-verification-code');
 
   try {
     final response = await http.post(
@@ -144,7 +137,7 @@ Future<TokenDto> verifyCode({
   required String email, 
   required String code,
 }) async {
-  final url = Uri.parse('$_baseUrl/verify-code');
+  final url = Uri.parse('${ApiConfig.authBaseUrl}/verify-code');
   final verifyDto = VerifyCodeDto(email: email, code: code); // Usamos el DTO
   
   try {
@@ -183,7 +176,7 @@ Future<TokenDto> verifyCode({
 
   // Endpoint de REFRESH TOKEN: POST /api/auth/refresh
   Future<TokenDto> refreshToken({required String refreshToken}) async {
-    final url = Uri.parse('$_baseUrl/refresh');
+    final url = Uri.parse('${ApiConfig.authBaseUrl}/refresh');
 
     try {
       final response = await http.post(

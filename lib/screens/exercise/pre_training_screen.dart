@@ -227,10 +227,12 @@ class PreTrainingScreen extends StatelessWidget {
   Widget _buildStartButton(BuildContext context) {
     return ElevatedButton.icon(
       onPressed: () {
-        // Navega a la pantalla de entrenamiento con cámara
+        // Navega a la pantalla de entrenamiento con cámara, pasando el ejercicio
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (context) => const CameraTrainingScreen()),
+          MaterialPageRoute(
+            builder: (context) => CameraTrainingScreen(exercise: exercise),
+          ),
         );
       },
       icon: const Icon(Icons.play_arrow),
