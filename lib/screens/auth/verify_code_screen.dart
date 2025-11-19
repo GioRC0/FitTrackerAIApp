@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:pin_code_fields/pin_code_fields.dart'; // Paquete OTP
 import 'package:fitracker_app/api/api_service.dart';
+import 'package:fitracker_app/data/auth_storage_service.dart';
 import 'package:fitracker_app/config/app_colors.dart';
 import 'package:fitracker_app/screens/main_screen.dart'; 
 import 'dart:async'; // Necesario para el temporizador de reenvío
@@ -16,6 +17,7 @@ class VerifyCodeScreen extends StatefulWidget {
 
 class _VerifyCodeScreenState extends State<VerifyCodeScreen> {
   final ApiService _apiService = ApiService();
+  final AuthStorageService _storageService = AuthStorageService();
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   
   String _currentCode = '';
@@ -64,6 +66,11 @@ class _VerifyCodeScreenState extends State<VerifyCodeScreen> {
           code: _currentCode,
         );
         
+        // CRÍTICO: Guardar los nuevos tokens después de verificar
+        await _storageService.saveTokens(tokenData);
+        
+        if (!mounted) return;
+        
         // ÉXITO: Usuario verificado. Guardar nuevos tokens y navegar.
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Cuenta verificada exitosamente!'), backgroundColor: AppColors.primaryAction),
@@ -76,11 +83,14 @@ class _VerifyCodeScreenState extends State<VerifyCodeScreen> {
         );
 
       } on ApiException catch (e) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: ${e.message}'), backgroundColor: AppColors.alertError),
         );
       } finally {
-        setState(() { _isLoading = false; });
+        if (mounted) {
+          setState(() { _isLoading = false; });
+        }
       }
     }
   }
@@ -214,14 +224,16 @@ class _VerifyCodeScreenState extends State<VerifyCodeScreen> {
         if (!canResend)
           Text(
             'Puedes reenviar el código en $_secondsRemaining segundos.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
+            ),
           ),
         TextButton(
           onPressed: canResend ? _handleResendCode : null,
           child: Text(
             'Reenviar Código',
             style: TextStyle(
-              color: canResend ? Theme.of(context).primaryColor : Colors.grey,
+              color: canResend ? Theme.of(context).primaryColor : Theme.of(context).iconTheme.color?.withOpacity(0.5),
             ),
           ),
         ),

@@ -28,6 +28,8 @@ class _SplashScreenState extends State<SplashScreen> {
 
     final sessionStatus = await _authService.checkSession();
 
+    if (!mounted) return;
+
     switch (sessionStatus) {
       case SessionStatus.valid:
         // Usuario autenticado y verificado -> Main Screen
@@ -40,19 +42,23 @@ class _SplashScreenState extends State<SplashScreen> {
         // Usuario registrado pero no verificado -> Login con mensaje
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
-            builder: (_) => LoginScreen(
+            builder: (newContext) => LoginScreen(
               onLogin: (context, email, password) {},
               onRegister: () {
-                Navigator.of(context).push(
+                Navigator.of(newContext).push(
                   MaterialPageRoute(
-                    builder: (context) => RegisterScreen(
-                      onBack: () => Navigator.of(context).pop(),
+                    builder: (registerContext) => RegisterScreen(
+                      onBack: () {
+                        if (Navigator.of(registerContext).canPop()) {
+                          Navigator.of(registerContext).pop();
+                        }
+                      },
                     ),
                   ),
                 );
               },
               onForgotPassword: () {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(newContext).showSnackBar(
                   const SnackBar(content: Text('Funcionalidad de Olvidé Contraseña pendiente')),
                 );
               },
@@ -66,19 +72,23 @@ class _SplashScreenState extends State<SplashScreen> {
         // No hay sesión o expiró -> Login
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
-            builder: (_) => LoginScreen(
+            builder: (newContext) => LoginScreen(
               onLogin: (context, email, password) {},
               onRegister: () {
-                Navigator.of(context).push(
+                Navigator.of(newContext).push(
                   MaterialPageRoute(
-                    builder: (context) => RegisterScreen(
-                      onBack: () => Navigator.of(context).pop(),
+                    builder: (registerContext) => RegisterScreen(
+                      onBack: () {
+                        if (Navigator.of(registerContext).canPop()) {
+                          Navigator.of(registerContext).pop();
+                        }
+                      },
                     ),
                   ),
                 );
               },
               onForgotPassword: () {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(newContext).showSnackBar(
                   const SnackBar(content: Text('Funcionalidad de Olvidé Contraseña pendiente')),
                 );
               },

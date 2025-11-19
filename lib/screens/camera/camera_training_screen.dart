@@ -27,17 +27,7 @@ class WebSocketClient {
 
   WebSocketClient({required this.wsUrl});
 
-  /// Sensibilidad por clase por ejercicio
-  static const Map<String, Map<String, double>> _sensitivityByExercise = {
-    'plank': {
-      'plank_cadera_caida': 0.45,
-      'plank_codos_abiertos': 0.45,
-      'plank_correcto': 1.75,
-      'plank_pelvis_levantada': 1.0,
-    },
-    'pushup': {}, // Add when available
-    'squat': {}, // Add when available
-  };
+  // Sin ajustes de sensibilidad - el servidor Python maneja eso
 
   Future<void> connect() async {
     try {
@@ -49,78 +39,27 @@ class WebSocketClient {
         (message) {
           try {
             final data = jsonDecode(message);
+            print('📥 Respuesta WebSocket: $data');
             
-            // Etiquetas de clases (mismo orden que Python)
-            const classLabels = [
-              'plank_cadera_caida',
-              'plank_codos_abiertos',
-              'plank_correcto',
-              'plank_pelvis_levantada',
-            ];
-
-            // --- OBTENER PREDICCIÓN Y PROBABILIDADES (compatible con real_time_feedback.py) ---
-            // Intentar diferentes nombres de campo para la predicción
-            final pred = data['pred'] ?? 
-                        data['prediction'] ?? 
-                        data['class'] ?? 
-                        data['predicted_class'] ?? 
-                        '?';
-
-            // Intentar diferentes nombres de campo para las probabilidades
-            dynamic probas = data['proba'] ?? 
-                           data['probabilities'] ?? 
-                           data['probs'] ?? 
-                           {};
-
-            // Si probas es una lista, convertir a Map con class labels
-            Map<String, double> rawProbs = {};
-            if (probas is List) {
-              for (int i = 0; i < classLabels.length && i < probas.length; i++) {
-                rawProbs[classLabels[i]] = (probas[i] as num).toDouble();
-              }
-            } else if (probas is Map) {
-              // Si ya es un dict/map, convertir valores a double
-              probas.forEach((key, value) {
-                rawProbs[key.toString()] = (value as num).toDouble();
+            // Obtener predicción y probabilidades (formato del servidor Python)
+            final prediction = data['prediction'] ?? data['pred'] ?? '';
+            final confidence = (data['confidence'] ?? 0.0) as num;
+            
+            // Probabilidades vienen como Map
+            final Map<String, double> probabilities = {};
+            if (data['probabilities'] != null) {
+              final probs = data['probabilities'] as Map;
+              probs.forEach((key, value) {
+                probabilities[key.toString()] = (value as num).toDouble();
               });
             }
 
-            // Si no hay probabilidades, crear un mapa vacío
-            if (rawProbs.isEmpty) {
-              print('⚠️ No se encontraron probabilidades en la respuesta');
-              rawProbs = {};
-            }
-
-            // --- APLICAR SENSIBILIDAD POR CLASE (como en Python) ---
-            final Map<String, double> adjustedProbs = {};
-            double total = 0.0;
+            print('📊 Predicción: $prediction (${(confidence * 100).toStringAsFixed(0)}%)');
             
-            // Detectar ejercicio del primer label
-            String exerciseType = 'plank';
-            if (rawProbs.keys.isNotEmpty) {
-              final firstLabel = rawProbs.keys.first;
-              if (firstLabel.startsWith('pushup_')) exerciseType = 'pushup';
-              else if (firstLabel.startsWith('squat_')) exerciseType = 'squat';
+            // Notificar callback
+            if (onPrediction != null) {
+              onPrediction!(probabilities);
             }
-            
-            final sensitivity = _sensitivityByExercise[exerciseType] ?? {};
-            rawProbs.forEach((label, prob) {
-              final factor = sensitivity[label] ?? 1.0;
-              final adjusted = prob * factor;
-              adjustedProbs[label] = adjusted;
-              total += adjusted;
-            });
-
-            // Normalizar
-            final Map<String, double> finalProbs = total > 0.0
-                ? adjustedProbs.map((k, v) => MapEntry(k, v / total))
-                : rawProbs; // Si total es 0, devolver probs originales
-
-            print('🎯 Raw: $rawProbs');
-            print('⚖️ Adjusted: $finalProbs');
-            print('📊 Predicción: $pred');
-
-            onPrediction?.call(finalProbs);
           } catch (e) {
             print('❌ Error al procesar mensaje WebSocket: $e');
           }
@@ -140,11 +79,31 @@ class WebSocketClient {
     }
   }
 
-  void sendFeatures(List<double> features) {
+  void sendFeatures(dynamic data) {
     if (_isConnected && _channel != null) {
       try {
-        final message = jsonEncode({'features': features});
+        final message = jsonEncode(data);
         _channel!.sink.add(message);
+        
+        // LOG COMPLETO del JSON enviado
+        print('📤 ==================== ENVIANDO AL API ====================');
+        print('📤 Número de frames: ${data is Map && data.containsKey("frames") ? (data["frames"] as List).length : "N/A"}');
+        
+        if (data is Map && data.containsKey("frames")) {
+          final frames = data["frames"] as List;
+          if (frames.isNotEmpty) {
+            print('📤 Primer frame completo:');
+            print(jsonEncode(frames.first));
+            if (frames.length > 1) {
+              print('📤 Último frame completo:');
+              print(jsonEncode(frames.last));
+            }
+          }
+        }
+        
+        print('📤 JSON completo (primeros 500 chars):');
+        print(message.length > 500 ? message.substring(0, 500) + '...' : message);
+        print('📤 =========================================================');
       } catch (e) {
         print('❌ Error al enviar features: $e');
       }
@@ -190,6 +149,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Map<String, double> _allProbabilities = {};
   String _currentStatus = "Iniciando...";
   int _repCounter = 0;
+  int _inferredLandmarksCount = 0; // Contador de landmarks inferidos en el último frame
 
   // PUSHUP: Detección por picos
   final Queue<double> _pushupSignalBuffer = Queue();
@@ -197,6 +157,9 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   final List<int> _pushupDetectedPeaks = [];
   int _pushupLastPeakFrame = -50;
   int _pushupFrameCount = 0;
+  
+  // Frame counter general para debug
+  int _frameCount = 0;
   
   static const int _pushupBufferSize = 150;
   static const int _pushupPeakMinDistance = 25;
@@ -223,6 +186,12 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   // Cache para suavizado EMA de landmarks
   final Map<int, List<double>> _smoothCache = {};
   static const double _emaAlpha = 0.6; // 60% nuevo, 40% anterior
+
+  // 🔥 CACHE TEMPORAL ROBUSTO: Inferencia de landmarks faltantes
+  final Map<int, MediaPipeLandmark> _lastValidLandmarks = {};
+  final Map<int, int> _landmarkMissingFrames = {}; // Cuántos frames lleva perdido cada landmark
+  static const int _maxMissingFrames = 30; // 🔥 1 segundo a 30fps - MUY PERMISIVO
+  int _consecutiveLostFrames = 0; // Contador de frames sin detección de MediaPipe
 
   // Captura de datos de entrenamiento
   final TrainingSessionService _sessionService = TrainingSessionService();
@@ -267,17 +236,17 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   }
   
   String _getWebSocketUrl(String exerciseType) {
-    // Usar API base de configuración y agregar endpoint específico
-    final baseUrl = ApiConfig.webSocketUrl.split('/ws')[0];
-    return '$baseUrl/ws/$exerciseType';
+    // Servidor en Google Cloud con CORS habilitado
+    const apiBaseUrl = 'ws://34.176.129.163:8080';
+    return '$apiBaseUrl/ws/$exerciseType';
   }
 
   Future<void> _initializeMediaPipe() async {
     try {
       print('🔄 Inicializando MediaPipe...');
       await _poseDetector.initialize(
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.7,
+        minDetectionConfidence: 0.5,  // Reducido de 0.7 a 0.5 para mejor detección
+        minTrackingConfidence: 0.5,   // Reducido de 0.7 a 0.5
       );
       print('✅ MediaPipe inicializado correctamente');
     } catch (e) {
@@ -360,6 +329,98 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     return smoothed;
   }
 
+  /// 🔥 INFERENCIA ROBUSTA: Rellena landmarks faltantes con últimos valores válidos
+  /// Permite continuidad en la repetición incluso si algunos puntos se pierden momentáneamente
+  Map<int, MediaPipeLandmark> _inferMissingLandmarks(Map<int, MediaPipeLandmark> detectedLandmarks) {
+    final Map<int, MediaPipeLandmark> complete = Map.from(detectedLandmarks);
+    int inferredCount = 0;
+    
+    // Landmarks críticos que DEBEN estar presentes para inferencia
+    final criticalPoints = [
+      MediaPipePoseLandmark.leftShoulder,
+      MediaPipePoseLandmark.rightShoulder,
+      MediaPipePoseLandmark.leftHip,
+      MediaPipePoseLandmark.rightHip,
+      MediaPipePoseLandmark.leftKnee,
+      MediaPipePoseLandmark.rightKnee,
+      MediaPipePoseLandmark.leftAnkle,
+      MediaPipePoseLandmark.rightAnkle,
+      MediaPipePoseLandmark.leftElbow,
+      MediaPipePoseLandmark.rightElbow,
+      MediaPipePoseLandmark.leftWrist,
+      MediaPipePoseLandmark.rightWrist,
+    ];
+
+    // 1. Actualizar cache con landmarks detectados (buenos)
+    detectedLandmarks.forEach((index, landmark) {
+      if (landmark.likelihood >= 0.3) { // 🔥 Umbral MUY bajo
+        _lastValidLandmarks[index] = landmark;
+        _landmarkMissingFrames[index] = 0; // Resetear contador
+      }
+    });
+
+    // 2. Rellenar landmarks faltantes o débiles
+    for (final pointIndex in criticalPoints) {
+      final detected = detectedLandmarks[pointIndex];
+      
+      // Si no fue detectado O tiene baja confianza
+      if (detected == null || detected.likelihood < 0.3) { // 🔥 Umbral 0.3
+        _landmarkMissingFrames[pointIndex] = (_landmarkMissingFrames[pointIndex] ?? 0) + 1;
+        
+        // Solo inferir si no ha estado perdido por demasiado tiempo
+        if (_landmarkMissingFrames[pointIndex]! <= _maxMissingFrames && 
+            _lastValidLandmarks.containsKey(pointIndex)) {
+          
+          // Usar último landmark válido con confianza reducida gradualmente
+          final framesLost = _landmarkMissingFrames[pointIndex]!;
+          final lastValid = _lastValidLandmarks[pointIndex]!;
+          final decayFactor = 1.0 - (framesLost / _maxMissingFrames) * 0.5; // Decay 0-50%
+          
+          complete[pointIndex] = MediaPipeLandmark(
+            x: lastValid.x,
+            y: lastValid.y,
+            z: lastValid.z,
+            likelihood: lastValid.likelihood * decayFactor, // Decay gradual
+          );
+          
+          inferredCount++;
+          
+          // Debug cada 60 frames
+          if (_frameCount % 60 == 1) {
+            print('🔄 Inferido: ${_getLandmarkName(pointIndex)} (perdido ${_landmarkMissingFrames[pointIndex]} frames)');
+          }
+        } else {
+          // Ha estado perdido demasiado tiempo, eliminar del cache
+          _lastValidLandmarks.remove(pointIndex);
+          _landmarkMissingFrames.remove(pointIndex);
+        }
+      }
+    }
+
+    // Actualizar contador para UI (opcional)
+    _inferredLandmarksCount = inferredCount;
+
+    return complete;
+  }
+
+  String _getLandmarkName(int index) {
+    final names = {
+      MediaPipePoseLandmark.leftShoulder: 'L_Shoulder',
+      MediaPipePoseLandmark.rightShoulder: 'R_Shoulder',
+      MediaPipePoseLandmark.leftElbow: 'L_Elbow',
+      MediaPipePoseLandmark.rightElbow: 'R_Elbow',
+      MediaPipePoseLandmark.leftWrist: 'L_Wrist',
+      MediaPipePoseLandmark.rightWrist: 'R_Wrist',
+      MediaPipePoseLandmark.leftHip: 'L_Hip',
+      MediaPipePoseLandmark.rightHip: 'R_Hip',
+      MediaPipePoseLandmark.leftKnee: 'L_Knee',
+      MediaPipePoseLandmark.rightKnee: 'R_Knee',
+      MediaPipePoseLandmark.leftAnkle: 'L_Ankle',
+      MediaPipePoseLandmark.rightAnkle: 'R_Ankle',
+    };
+    return names[index] ?? 'Unknown_$index';
+  }
+
   Future<void> _processCameraImage(CameraImage image) async {
     if (_isProcessing) return;
 
@@ -381,38 +442,94 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
         height: image.height,
       );
 
+      // Debug: imprimir cada 60 frames
+      if (_frameCount % 60 == 0) {
+        print('📷 Frame $_frameCount: result=${result != null}, poses=${result?.poses.length ?? 0}');
+      }
+      _frameCount++;
+
       if (mounted && result != null && result.poses.isNotEmpty) {
+        _consecutiveLostFrames = 0; // Resetear contador
         final pose = result.poses.first;
 
-        // Aplicar suavizado EMA
+        // 1. Aplicar suavizado EMA
         final smoothedLandmarks = _smoothPose(pose.landmarks);
-        final smoothedPose = MediaPipePose(landmarks: smoothedLandmarks);
+        
+        // 2. 🔥 INFERIR landmarks faltantes usando cache temporal
+        final completeLandmarks = _inferMissingLandmarks(smoothedLandmarks);
+        
+        final completePose = MediaPipePose(landmarks: completeLandmarks);
 
         setState(() {
-          _poses = [smoothedPose];
+          _poses = [completePose];
         });
 
         try {
+          // Debug: imprimir cada 60 frames
+          if (_frameCount % 60 == 1) {
+            print('🎯 Procesando frame para $_exerciseType con ${completeLandmarks.length} landmarks (${completeLandmarks.length - smoothedLandmarks.length} inferidos)');
+          }
+          
           // Procesar según tipo de ejercicio
           if (_exerciseType == 'pushup') {
-            _processPushupFrame(smoothedLandmarks);
+            _processPushupFrame(completeLandmarks);
           } else if (_exerciseType == 'squat') {
-            _processSquatFrame(smoothedLandmarks);
+            _processSquatFrame(completeLandmarks);
           } else if (_exerciseType == 'plank') {
-            _processPlankFrame(smoothedLandmarks);
+            _processPlankFrame(completeLandmarks);
           }
         } catch (e) {
-          print('❌ Error al procesar frame: $e');
+          print('❌ Error al procesar frame ($_exerciseType): $e');
+          print('Stack trace: $e');
         }
       } else if (result == null || result.poses.isEmpty) {
-        _clearExerciseBuffers();
-        if (_currentStatus != "No se detecta cuerpo") {
-          setState(() {
-            _currentStatus = "No se detecta cuerpo";
-            _currentPrediction = "";
-            _currentConfidence = 0.0;
-            _allProbabilities = {};
-          });
+        // 🔥 NO LIMPIAR CACHE - Usar inferencia total
+        _consecutiveLostFrames++;
+        
+        // Si tenemos cache válido, CONTINUAR procesando con landmarks inferidos
+        if (_lastValidLandmarks.isNotEmpty && _consecutiveLostFrames <= _maxMissingFrames) {
+          // Crear landmarks completamente inferidos del cache
+          final inferredLandmarks = _inferMissingLandmarks({});
+          
+          if (inferredLandmarks.isNotEmpty) {
+            final inferredPose = MediaPipePose(landmarks: inferredLandmarks);
+            setState(() {
+              _poses = [inferredPose];
+            });
+            
+            // Debug cada 15 frames
+            if (_frameCount % 15 == 0) {
+              print('⚡ MediaPipe perdió detección (${_consecutiveLostFrames}/${_maxMissingFrames}), usando 100% inferencia con ${inferredLandmarks.length} landmarks');
+            }
+            
+            // Procesar frame con datos inferidos
+            try {
+              if (_exerciseType == 'pushup') {
+                _processPushupFrame(inferredLandmarks);
+              } else if (_exerciseType == 'squat') {
+                _processSquatFrame(inferredLandmarks);
+              } else if (_exerciseType == 'plank') {
+                _processPlankFrame(inferredLandmarks);
+              }
+            } catch (e) {
+              print('❌ Error procesando frame inferido: $e');
+            }
+          }
+        } else {
+          // Solo mostrar "No se detecta cuerpo" después de 30+ frames perdidos
+          if (_consecutiveLostFrames > _maxMissingFrames) {
+            _clearExerciseBuffers();
+            _clearInferenceCache();
+            
+            if (_currentStatus != "No se detecta cuerpo") {
+              setState(() {
+                _currentStatus = "No se detecta cuerpo";
+                _currentPrediction = "";
+                _currentConfidence = 0.0;
+                _allProbabilities = {};
+              });
+            }
+          }
         }
       }
     } catch (e) {
@@ -433,6 +550,11 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     }
   }
 
+  void _clearInferenceCache() {
+    _lastValidLandmarks.clear();
+    _landmarkMissingFrames.clear();
+  }
+
   /// Calcula el ángulo entre tres puntos (en grados)
   double _calculateAngle(List<double> a, List<double> b, List<double> c) {
     final radians = atan2(c[1] - b[1], c[0] - b[0]) - 
@@ -445,27 +567,129 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   }
   
   bool _validLandmark(MediaPipeLandmark? lm) {
-    return lm != null && lm.x >= 0 && lm.x <= 1 && lm.y >= 0 && lm.y <= 1;
+    // Permitimos margen del 30% fuera de pantalla (-0.3 a 1.3)
+    // 🔥 Confianza ULTRA BAJA 0.25 para aceptar landmarks muy inferidos
+    return lm != null && 
+           lm.likelihood > 0.25 && 
+           lm.x >= -0.3 && lm.x <= 1.3 && 
+           lm.y >= -0.3 && lm.y <= 1.3;
   }
 
-  // ========== PUSHUP FEATURE EXTRACTION ==========
-  Map<String, double>? _extractPushupFeatures(Map<int, MediaPipeLandmark> landmarks) {
-    final shoulderL = landmarks[MediaPipePoseLandmark.leftShoulder];
-    final hipL = landmarks[MediaPipePoseLandmark.leftHip];
-    final ankleL = landmarks[MediaPipePoseLandmark.leftAnkle];
-    final elbowL = landmarks[MediaPipePoseLandmark.leftElbow];
-    final wristL = landmarks[MediaPipePoseLandmark.leftWrist];
+  /// Normaliza y ROTA las coordenadas para que coincidan con la visión humana (Vertical)
+  Map<int, MediaPipeLandmark> _normalizeLandmarks(Map<int, MediaPipeLandmark> landmarks) {
+    final width = _absoluteImageSize.width;
+    final height = _absoluteImageSize.height;
 
-    if (!_validLandmark(shoulderL) || !_validLandmark(hipL) || 
-        !_validLandmark(ankleL) || !_validLandmark(elbowL) || !_validLandmark(wristL)) {
+    // Detectar si necesitamos rotar (Caso común: Android Portrait)
+    // Si el ancho del buffer es mayor que el alto, pero usamos el cel en vertical,
+    // la imagen viene "acostada".
+    bool needRotation = Platform.isAndroid && width > height;
+
+    return landmarks.map((key, lm) {
+      double x, y;
+
+      if (needRotation) {
+        // 🔄 INTERCAMBIO DE EJES (Rotación 90/270 grados)
+        // El eje Y del sensor se convierte en el X de la pantalla
+        // El eje X del sensor se convierte en el Y de la pantalla
+        
+        // Para cámara frontal (Selfie), normalizar e invertir X para corregir espejo
+        x = 1 - (lm.y / height); 
+        y = lm.x / width;  
+        
+        // Debug cada 60 frames
+        if (_frameCount % 60 == 1 && key == MediaPipePoseLandmark.leftHip) {
+          print('🔄 ROTACIÓN aplicada:');
+          print('  Original: (${lm.x.toStringAsFixed(1)}, ${lm.y.toStringAsFixed(1)})');
+          print('  Rotado: (${x.toStringAsFixed(3)}, ${y.toStringAsFixed(3)})');
+          print('  Buffer size: ${width.toInt()}x${height.toInt()}');
+        }
+      } else {
+        // Comportamiento normal (iOS suele manejar esto mejor o Web)
+        x = lm.x / width;
+        y = lm.y / height;
+      }
+
+      return MapEntry(
+        key,
+        MediaPipeLandmark(
+          x: x,
+          y: y,
+          z: lm.z,
+          likelihood: lm.likelihood,
+        ),
+      );
+    });
+  }
+
+  // ========== PUSHUP FEATURE EXTRACTION (MEJORADO CON DETECCIÓN DE LADO) ==========
+  Map<String, double>? _extractPushupFeatures(Map<int, MediaPipeLandmark> landmarks) {
+    // 1. Obtener landmarks de AMBOS lados
+    final leftPoints = [
+      landmarks[MediaPipePoseLandmark.leftShoulder],
+      landmarks[MediaPipePoseLandmark.leftHip],
+      landmarks[MediaPipePoseLandmark.leftAnkle],
+      landmarks[MediaPipePoseLandmark.leftElbow],
+      landmarks[MediaPipePoseLandmark.leftWrist]
+    ];
+
+    final rightPoints = [
+      landmarks[MediaPipePoseLandmark.rightShoulder],
+      landmarks[MediaPipePoseLandmark.rightHip],
+      landmarks[MediaPipePoseLandmark.rightAnkle],
+      landmarks[MediaPipePoseLandmark.rightElbow],
+      landmarks[MediaPipePoseLandmark.rightWrist]
+    ];
+
+    // 2. Calcular visibilidad promedio de cada lado
+    double leftScore = 0;
+    double rightScore = 0;
+    int leftCount = 0;
+    int rightCount = 0;
+
+    for (var lm in leftPoints) {
+      if (lm != null) { leftScore += lm.likelihood; leftCount++; }
+    }
+    for (var lm in rightPoints) {
+      if (lm != null) { rightScore += lm.likelihood; rightCount++; }
+    }
+
+    // Decidir qué lado usar
+    final useLeft = leftScore >= rightScore;
+    final activePoints = useLeft ? leftPoints : rightPoints;
+    
+    // Debug cada 60 frames
+    if (_pushupFrameCount % 60 == 0) {
+      print('🔍 PUSHUP Smart Detection:');
+      print('  Left score: ${leftScore.toStringAsFixed(2)} ($leftCount pts)');
+      print('  Right score: ${rightScore.toStringAsFixed(2)} ($rightCount pts)');
+      print('  Using: ${useLeft ? "LEFT" : "RIGHT"} side');
+    }
+
+    // 3. 🔥 VALIDACIÓN PERMISIVA: Solo necesitamos los puntos ESENCIALES
+    //    Shoulder, Hip y Elbow son OBLIGATORIOS. Wrist y Ankle opcionales.
+    if (!_validLandmark(activePoints[0]) || // Shoulder
+        !_validLandmark(activePoints[1]) || // Hip
+        !_validLandmark(activePoints[3])) {  // Elbow
+      if (_pushupFrameCount % 60 == 0) {
+        print('  ❌ Faltan puntos esenciales (shoulder/hip/elbow)');
+      }
       return null;
     }
 
-    final shoulder = [shoulderL!.x, shoulderL.y];
-    final hip = [hipL!.x, hipL.y];
-    final ankle = [ankleL!.x, ankleL.y];
-    final elbow = [elbowL!.x, elbowL.y];
-    final wrist = [wristL!.x, wristL.y];
+    // 4. Extraer coordenadas del lado ganador (con fallback si falta tobillo/muñeca)
+    final shoulder = [activePoints[0]!.x, activePoints[0]!.y];
+    final hip = [activePoints[1]!.x, activePoints[1]!.y];
+    final elbow = [activePoints[3]!.x, activePoints[3]!.y];
+    
+    // Ankle y Wrist son opcionales - usar estimación si faltan
+    final ankle = _validLandmark(activePoints[2])
+        ? [activePoints[2]!.x, activePoints[2]!.y]
+        : [hip[0], hip[1] + 0.5]; // Estimación: 50% más abajo de la cadera
+    
+    final wrist = _validLandmark(activePoints[4])
+        ? [activePoints[4]!.x, activePoints[4]!.y]
+        : [elbow[0], elbow[1] + 0.15]; // Estimación: 15% más abajo del codo
 
     return {
       'body_angle': _calculateAngle(shoulder, hip, ankle),
@@ -488,11 +712,27 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     final ankleL = landmarks[MediaPipePoseLandmark.leftAnkle];
     final ankleR = landmarks[MediaPipePoseLandmark.rightAnkle];
 
+    // Debug temporal
+    if (_frameCount % 60 == 1) {
+      print('🔍 SQUAT landmarks (normalizados):');
+      print('  shoulderL=${_validLandmark(shoulderL)} (${shoulderL?.x.toStringAsFixed(3)}, ${shoulderL?.y.toStringAsFixed(3)})');
+      print('  shoulderR=${_validLandmark(shoulderR)} (${shoulderR?.x.toStringAsFixed(3)}, ${shoulderR?.y.toStringAsFixed(3)})');
+      print('  hipL=${_validLandmark(hipL)} (${hipL?.x.toStringAsFixed(3)}, ${hipL?.y.toStringAsFixed(3)})');
+      print('  kneeL=${_validLandmark(kneeL)} (${kneeL?.x.toStringAsFixed(3)}, ${kneeL?.y.toStringAsFixed(3)})');
+    }
+
     if (!_validLandmark(shoulderL) || !_validLandmark(shoulderR) ||
         !_validLandmark(hipL) || !_validLandmark(hipR) ||
         !_validLandmark(kneeL) || !_validLandmark(kneeR) ||
         !_validLandmark(ankleL) || !_validLandmark(ankleR)) {
+      if (_frameCount % 60 == 1) {
+        print('  ❌ Validación falló');
+      }
       return null;
+    }
+    
+    if (_frameCount % 60 == 1) {
+      print('  ✅ Todos los landmarks válidos, calculando features...');
     }
 
     final shoulder_l = [shoulderL!.x, shoulderL.y];
@@ -521,24 +761,62 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     };
   }
 
-  // ========== PLANK FEATURE EXTRACTION ==========
+  // ========== PLANK FEATURE EXTRACTION (MEJORADO CON DETECCIÓN DE LADO) ==========
   Map<String, double>? _extractPlankFeatures(Map<int, MediaPipeLandmark> landmarks) {
-    final shoulderL = landmarks[MediaPipePoseLandmark.leftShoulder];
-    final elbowL = landmarks[MediaPipePoseLandmark.leftElbow];
-    final hipL = landmarks[MediaPipePoseLandmark.leftHip];
-    final ankleL = landmarks[MediaPipePoseLandmark.leftAnkle];
-    final wristL = landmarks[MediaPipePoseLandmark.leftWrist];
+    // 1. Obtener landmarks de AMBOS lados
+    final leftPoints = [
+      landmarks[MediaPipePoseLandmark.leftShoulder],
+      landmarks[MediaPipePoseLandmark.leftElbow],
+      landmarks[MediaPipePoseLandmark.leftHip],
+      landmarks[MediaPipePoseLandmark.leftAnkle],
+      landmarks[MediaPipePoseLandmark.leftWrist]
+    ];
 
-    if (!_validLandmark(shoulderL) || !_validLandmark(elbowL) ||
-        !_validLandmark(hipL) || !_validLandmark(ankleL) || !_validLandmark(wristL)) {
+    final rightPoints = [
+      landmarks[MediaPipePoseLandmark.rightShoulder],
+      landmarks[MediaPipePoseLandmark.rightElbow],
+      landmarks[MediaPipePoseLandmark.rightHip],
+      landmarks[MediaPipePoseLandmark.rightAnkle],
+      landmarks[MediaPipePoseLandmark.rightWrist]
+    ];
+
+    // 2. Calcular visibilidad promedio de cada lado
+    double leftScore = 0;
+    double rightScore = 0;
+
+    for (var lm in leftPoints) {
+      if (lm != null) leftScore += lm.likelihood;
+    }
+    for (var lm in rightPoints) {
+      if (lm != null) rightScore += lm.likelihood;
+    }
+
+    // Decidir qué lado usar
+    final useLeft = leftScore >= rightScore;
+    final activePoints = useLeft ? leftPoints : rightPoints;
+
+    // 3. Validar SOLO puntos esenciales (shoulder, hip, elbow)
+    // Ankle y wrist pueden ser estimados si están ocultos
+    if (!_validLandmark(activePoints[0]) || // Shoulder
+        !_validLandmark(activePoints[2]) || // Hip
+        !_validLandmark(activePoints[1])) {  // Elbow
       return null;
     }
 
-    final shoulder = [shoulderL!.x, shoulderL.y];
-    final elbow = [elbowL!.x, elbowL.y];
-    final hip = [hipL!.x, hipL.y];
-    final ankle = [ankleL!.x, ankleL.y];
-    final wrist = [wristL!.x, wristL.y];
+    // 4. Extraer coordenadas del lado ganador
+    final shoulder = [activePoints[0]!.x, activePoints[0]!.y];
+    final elbow = [activePoints[1]!.x, activePoints[1]!.y];
+    final hip = [activePoints[2]!.x, activePoints[2]!.y];
+    
+    // Estimar ankle si no es válido (hip + 0.5 hacia abajo)
+    final ankle = _validLandmark(activePoints[3])
+        ? [activePoints[3]!.x, activePoints[3]!.y]
+        : [hip[0], hip[1] + 0.5];
+    
+    // Estimar wrist si no es válido (elbow + 0.15 hacia abajo)
+    final wrist = _validLandmark(activePoints[4])
+        ? [activePoints[4]!.x, activePoints[4]!.y]
+        : [elbow[0], elbow[1] + 0.15];
 
     return {
       'body_angle': _calculateAngle(shoulder, hip, ankle),
@@ -552,8 +830,21 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   // ========== EXERCISE-SPECIFIC PROCESSING ==========
   
   void _processPushupFrame(Map<int, MediaPipeLandmark> landmarks) {
-    final features = _extractPushupFeatures(landmarks);
-    if (features == null) return;
+    // Debug cada 60 frames
+    if (_pushupFrameCount % 60 == 0) {
+      print('💪 _processPushupFrame llamado (frame $_pushupFrameCount) con ${landmarks.length} landmarks');
+    }
+    
+    final normalizedLandmarks = _normalizeLandmarks(landmarks);
+    final features = _extractPushupFeatures(normalizedLandmarks);
+    if (features == null) {
+      if (mounted && _currentStatus != 'Posición no detectada') {
+        setState(() {
+          _currentStatus = 'Posición no detectada';
+        });
+      }
+      return;
+    }
 
     final shoulderWristVerticalDiff = features['shoulder_wrist_vertical_diff']!;
     
@@ -572,7 +863,7 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       final signalRange = signal.reduce(max) - signal.reduce(min);
       final signalMin = signal.reduce(min);
 
-      if (signalRange > 0.05) {
+      if (signalRange > _pushupMinRange) {
         final heightThreshold = signalMin + (signalRange * 0.40);
         
         // Simple peak detection: find local maxima above threshold
@@ -602,9 +893,8 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
                   
                   print('🔍 PUSHUP Rep $_repCounter detectada, enviando ${windowFeatures.length} frames');
                   
-                  // Enviar frames como lista de diccionarios
-                  final message = jsonEncode({'frames': windowFeatures});
-                  _wsClient._channel?.sink.add(message);
+                  // Enviar frames usando el método sendFeatures
+                  _wsClient.sendFeatures({'frames': windowFeatures});
                   
                   setState(() {
                     _currentStatus = 'Rep $_repCounter detectada! Clasificando...';
@@ -619,7 +909,8 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       }
     }
 
-    if (mounted && _currentStatus == "Iniciando...") {
+    // Actualizar estado si aún está iniciando o sin detección
+    if (mounted && (_currentStatus == "Iniciando..." || _currentStatus == "Posición no detectada" || _currentStatus == "WebSocket conectado")) {
       setState(() {
         _currentStatus = 'Listo - Haz flexiones';
       });
@@ -627,8 +918,21 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   }
 
   void _processSquatFrame(Map<int, MediaPipeLandmark> landmarks) {
-    final features = _extractSquatFeatures(landmarks);
-    if (features == null) return;
+    // Debug cada 60 frames
+    if (_frameCount % 60 == 1) {
+      print('🦾 _processSquatFrame llamado con ${landmarks.length} landmarks');
+    }
+    
+    final normalizedLandmarks = _normalizeLandmarks(landmarks);
+    final features = _extractSquatFeatures(normalizedLandmarks);
+    if (features == null) {
+      if (mounted && _currentStatus != 'Posición no detectada') {
+        setState(() {
+          _currentStatus = 'Posición no detectada';
+        });
+      }
+      return;
+    }
 
     final avgKneeAngle = features['avg_knee_angle']!;
 
@@ -649,8 +953,17 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       if (_squatCurrentRepData.isNotEmpty) {
         print('🔍 SQUAT Rep $_repCounter completada, enviando ${_squatCurrentRepData.length} frames');
         
-        final message = jsonEncode({'frames': _squatCurrentRepData});
-        _wsClient._channel?.sink.add(message);
+        // Debug: imprimir primer frame para verificar formato
+        if (_squatCurrentRepData.isNotEmpty) {
+          final firstFrame = _squatCurrentRepData.first;
+          print('📊 Primer frame de datos:');
+          print('  - left_knee_angle: ${firstFrame['left_knee_angle']?.toStringAsFixed(2)}');
+          print('  - avg_knee_angle: ${firstFrame['avg_knee_angle']?.toStringAsFixed(2)}');
+          print('  - knee_distance: ${firstFrame['knee_distance']?.toStringAsFixed(4)}');
+        }
+        
+        // Enviar frames usando el método sendFeatures
+        _wsClient.sendFeatures({'frames': _squatCurrentRepData});
         
         setState(() {
           _currentStatus = 'Rep $_repCounter completada! Clasificando...';
@@ -658,7 +971,8 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       }
     }
 
-    if (mounted && _currentStatus == "Iniciando...") {
+    // Actualizar estado si aún está iniciando o sin detección
+    if (mounted && (_currentStatus == "Iniciando..." || _currentStatus == "Posición no detectada" || _currentStatus == "WebSocket conectado")) {
       setState(() {
         _currentStatus = _squatState == 'up' ? 'Listo para bajar' : 'Bajando...';
       });
@@ -666,8 +980,16 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   }
 
   void _processPlankFrame(Map<int, MediaPipeLandmark> landmarks) {
-    final features = _extractPlankFeatures(landmarks);
-    if (features == null) return;
+    final normalizedLandmarks = _normalizeLandmarks(landmarks);
+    final features = _extractPlankFeatures(normalizedLandmarks);
+    if (features == null) {
+      if (mounted && _currentStatus != 'Posición no detectada') {
+        setState(() {
+          _currentStatus = 'Posición no detectada';
+        });
+      }
+      return;
+    }
 
     _plankFeatureBuffer.add(features);
 
@@ -676,14 +998,16 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     if (_plankFeatureBuffer.length >= bufferSize) {
       print('🔍 PLANK Buffer completo, enviando ${_plankFeatureBuffer.length} frames');
       
-      final message = jsonEncode({'frames': _plankFeatureBuffer});
-      _wsClient._channel?.sink.add(message);
+      // Enviar en el mismo formato que Python: {"frames": [lista de dicts]}
+      _wsClient.sendFeatures({'frames': _plankFeatureBuffer});
       
       _plankFeatureBuffer.clear();
       
-      setState(() {
-        _currentStatus = "Clasificando postura...";
-      });
+      if (mounted) {
+        setState(() {
+          _currentStatus = "Clasificando postura...";
+        });
+      }
     } else {
       if (mounted) {
         setState(() {
@@ -693,18 +1017,46 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     }
   }
 
+  // Configuración de sensibilidad para SQUAT
+  static const Map<String, double> _squatSensitivities = {
+    'squat_correcto': 1.0,
+    'squat_espalda_arqueada': 1.3,
+    'squat_poca_profundidad': 3.0,
+    'squat_valgo_rodilla': 4.0
+  };
+
   void _handlePrediction(Map<String, double> probabilities) {
     if (!mounted) return;
 
-    final sortedEntries = probabilities.entries.toList()
+    // 1. Aplicar multiplicadores si es Squat
+    Map<String, double> adjustedProbabilities = Map.from(probabilities);
+    
+    if (_exerciseType == 'squat') {
+      adjustedProbabilities.updateAll((key, value) {
+        // Buscar multiplicador (default 1.0 si no existe)
+        final multiplier = _squatSensitivities[key] ?? 1.0;
+        return value * multiplier;
+      });
+    }
+
+    // 2. Ordenar basado en probabilidades AJUSTADAS
+    final sortedEntries = adjustedProbabilities.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
+
+    if (sortedEntries.isEmpty) return;
 
     final best = sortedEntries.first;
 
+    // 3. Recuperar la probabilidad REAL (original) para mostrar en pantalla
+    double displayConfidence = probabilities[best.key] ?? 0.0;
+    
+    // 🛡️ ASEGURAR que NUNCA supere 100% (máximo 1.0)
+    displayConfidence = displayConfidence.clamp(0.0, 1.0);
+
     setState(() {
       _currentPrediction = best.key;
-      _currentConfidence = best.value;
-      _allProbabilities = Map.fromEntries(sortedEntries);
+      _currentConfidence = displayConfidence; // Usar original limitado para UI
+      _allProbabilities = Map.fromEntries(sortedEntries); // Ordenado por sensibilidad
       
       // Format status based on exercise
       String status = best.key
@@ -712,14 +1064,14 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
           .replaceAll('_', ' ');
       
       if (_exerciseType == 'plank') {
-        _currentStatus = '$status (${(best.value * 100).toStringAsFixed(0)}%)';
+        _currentStatus = '$status (${(displayConfidence * 100).toStringAsFixed(0)}%)';
       } else {
-        _currentStatus = 'Rep $_repCounter: $status (${(best.value * 100).toStringAsFixed(0)}%)';
+        _currentStatus = 'Rep $_repCounter: $status (${(displayConfidence * 100).toStringAsFixed(0)}%)';
       }
     });
 
-    // Capturar datos para el reporte
-    _captureTrainingData(best.key, best.value, probabilities);
+    // Capturar datos para el reporte (usando probabilidades originales)
+    _captureTrainingData(best.key, displayConfidence, probabilities);
   }
 
   void _captureTrainingData(
@@ -967,7 +1319,9 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
             ..._allProbabilities.entries.take(4).map((entry) {
               final displayName =
                   entry.key.replaceAll('plank_', '').replaceAll('_', ' ');
-              final percentage = (entry.value * 100).toStringAsFixed(0);
+              // 🛡️ Limitar a máximo 100%
+              final clampedValue = entry.value.clamp(0.0, 1.0);
+              final percentage = (clampedValue * 100).toStringAsFixed(0);
               return Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(

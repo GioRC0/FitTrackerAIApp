@@ -158,7 +158,9 @@ class _TrainingTabState extends State<TrainingTab> {
                         const SizedBox(height: 4),
                         Text(
                           exercise.shortDescription,
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
+                          ),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -186,19 +188,24 @@ class _TrainingTabState extends State<TrainingTab> {
                       ),
                       Chip(
                         label: Text(exercise.muscleGroup),
-                        labelStyle: TextStyle(color: Colors.grey.shade800, fontSize: 12),
+                        labelStyle: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: 12),
                         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                         visualDensity: VisualDensity.compact,
-                        shape: StadiumBorder(side: BorderSide(color: Colors.grey.shade400)),
+                        shape: StadiumBorder(side: BorderSide(color: Theme.of(context).dividerColor)),
                         backgroundColor: Colors.transparent,
                       ),
                     ],
                   ),
                   Row(
                     children: [
-                      Icon(Icons.timer_outlined, size: 16, color: Colors.grey.shade600),
+                      Icon(Icons.timer_outlined, size: 16, color: Theme.of(context).iconTheme.color?.withOpacity(0.6)),
                       const SizedBox(width: 4),
-                      Text(duration, style: TextStyle(color: Colors.grey.shade600)),
+                      Text(
+                        duration,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
+                        ),
+                      ),
                     ],
                   ),
                 ],
@@ -207,9 +214,14 @@ class _TrainingTabState extends State<TrainingTab> {
               // --- Stats: Mejor Marca y Progreso ---
               Row(
                 children: [
-                  Icon(Icons.emoji_events_outlined, size: 16, color: Colors.grey.shade600),
+                  Icon(Icons.emoji_events_outlined, size: 16, color: Theme.of(context).iconTheme.color?.withOpacity(0.6)),
                   const SizedBox(width: 4),
-                  Text('Mejor: 20', style: TextStyle(color: Colors.grey.shade600)),
+                  Text(
+                    'Mejor: 20',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
+                    ),
+                  ),
                   const SizedBox(width: 16),
                   const Icon(Icons.trending_up, size: 16, color: Colors.green),
                   const SizedBox(width: 4),

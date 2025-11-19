@@ -1,12 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'config/app_colors.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'screens/splash_screen.dart';
+import 'services/theme_service.dart';
 
 void main() async{
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('es_ES', null);
-  runApp(const MyApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => ThemeService(),
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -15,20 +22,26 @@ class MyApp extends StatelessWidget {
   // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'FitTracker Tesis',
-      
-      // Tema CLARO (Modo por defecto)
-      theme: _lightTheme, 
-      
-      // Tema OSCURO
-      darkTheme: _darkTheme, 
-      
-      // La aplicación inicia en modo CLARO por defecto
-      themeMode: ThemeMode.light, 
-      
-      // Inicia con SplashScreen que verificará la sesión
-      home: const SplashScreen(),
+    return Consumer<ThemeService>(
+      builder: (context, themeService, child) {
+        return MaterialApp(
+          title: 'FitTracker Tesis',
+          
+          // Tema CLARO (Modo por defecto)
+          theme: _lightTheme, 
+          
+          // Tema OSCURO
+          darkTheme: _darkTheme, 
+          
+          // Tema dinámico controlado por ThemeService
+          themeMode: themeService.themeMode, 
+          
+          // Inicia con SplashScreen que verificará la sesión
+          home: const SplashScreen(),
+
+          debugShowCheckedModeBanner: false,
+        );
+      },
     );
   }
 }

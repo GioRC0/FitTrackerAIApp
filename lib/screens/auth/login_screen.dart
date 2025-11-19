@@ -59,6 +59,8 @@ class _LoginScreenState extends State<LoginScreen> {
         // ----------------------------------------------------
         // LÓGICA CLAVE: VERIFICACIÓN CONDICIONAL
         // ----------------------------------------------------
+        if (!mounted) return;
+        
         if (!tokenData.isVerified) {
           // 1. SI NO ESTÁ VERIFICADO: Redirigir a la pantalla de verificación
           ScaffoldMessenger.of(context).showSnackBar(
@@ -88,6 +90,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       } on ApiException catch (e) {
         // --- FALLO: Mostrar error al usuario ---
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error: ${e.message}'),
@@ -96,6 +99,7 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       } catch (e) {
         // --- FALLO: Error inesperado ---
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error inesperado: ${e.toString()}'),
@@ -103,9 +107,11 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         );
       } finally {
-        setState(() {
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
       }
     }
   }
@@ -202,7 +208,7 @@ class _LoginScreenState extends State<LoginScreen> {
         Text(
           'Monitorea tus rutinas con inteligencia artificial',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: Colors.grey, // text-muted-foreground
+            color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
           ),
           textAlign: TextAlign.center,
         ),

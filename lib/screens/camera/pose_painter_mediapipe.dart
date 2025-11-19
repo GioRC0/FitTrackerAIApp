@@ -61,8 +61,8 @@ class PosePainterMediaPipe extends CustomPainter {
 
       final point = _translatePoint(landmark.x, landmark.y, size);
 
-      // Solo dibujar si tiene buena confianza
-      if (landmark.likelihood >= 0.5) {
+      // Solo dibujar si tiene buena confianza (>= 0.6)
+      if (landmark.likelihood >= 0.6) {
         // Punto principal
         paint.color = Colors.greenAccent;
         canvas.drawCircle(point, 6.0, paint);
@@ -124,7 +124,8 @@ class PosePainterMediaPipe extends CustomPainter {
     final end = pose.getLandmark(endIndex);
 
     if (start == null || end == null) return;
-    if (start.likelihood < 0.5 || end.likelihood < 0.5) return;
+    // Solo dibujar línea si AMBOS puntos tienen confianza >= 0.6
+    if (start.likelihood < 0.6 || end.likelihood < 0.6) return;
 
     final paint = Paint()
       ..style = PaintingStyle.stroke

@@ -32,8 +32,9 @@ class MediaPipePosePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     companion object {
         private const val TAG = "MediaPipePosePlugin"
         private const val CHANNEL_NAME = "mediapipe_pose_channel"
-        private const val MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-        private const val MODEL_FILE_NAME = "pose_landmarker_lite.task"
+        // 🔥 MODELO FULL - Balance perfecto entre precisión y velocidad
+        private const val MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
+        private const val MODEL_FILE_NAME = "pose_landmarker_full.task"
     }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {

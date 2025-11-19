@@ -92,9 +92,9 @@ class _HomeTabState extends State<HomeTab> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline, size: 64, color: Colors.grey[400]),
+            Icon(Icons.error_outline, size: 64, color: Theme.of(context).iconTheme.color?.withOpacity(0.5)),
             const SizedBox(height: 16),
-            Text(_errorMessage!, style: TextStyle(color: Colors.grey[600])),
+            Text(_errorMessage!, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7))),
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: _loadDashboard,
@@ -111,7 +111,7 @@ class _HomeTabState extends State<HomeTab> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[400]),
+            Icon(Icons.inbox_outlined, size: 64, color: Theme.of(context).iconTheme.color?.withOpacity(0.5)),
             const SizedBox(height: 16),
             const Text('No hay datos disponibles'),
             const SizedBox(height: 16),
@@ -211,7 +211,7 @@ class _HomeTabState extends State<HomeTab> {
           'Aquí está tu actividad reciente',
           style: TextStyle(
             fontSize: 16,
-            color: Colors.grey[600],
+            color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
           ),
         ),
       ],
@@ -382,7 +382,7 @@ class _HomeTabState extends State<HomeTab> {
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 11,
-                color: Colors.grey[600],
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
               ),
             ),
           ],
@@ -401,11 +401,11 @@ class _HomeTabState extends State<HomeTab> {
           child: Center(
             child: Column(
               children: [
-                Icon(Icons.fitness_center_outlined, size: 48, color: Colors.grey[400]),
+                Icon(Icons.fitness_center_outlined, size: 48, color: Theme.of(context).iconTheme.color?.withOpacity(0.5)),
                 const SizedBox(height: 8),
                 Text(
                   'No hay actividad reciente',
-                  style: TextStyle(color: Colors.grey[600]),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7)),
                 ),
               ],
             ),
@@ -460,7 +460,7 @@ class _HomeTabState extends State<HomeTab> {
         child: Container(
           padding: const EdgeInsets.all(12.0),
           decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey[300]!),
+            border: Border.all(color: Theme.of(context).dividerColor),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Row(
@@ -479,18 +479,18 @@ class _HomeTabState extends State<HomeTab> {
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        Icon(Icons.calendar_today, size: 12, color: Colors.grey[600]),
+                        Icon(Icons.calendar_today, size: 12, color: Theme.of(context).iconTheme.color?.withOpacity(0.6)),
                         const SizedBox(width: 4),
                         Text(
                           DateFormat('d MMM y', 'es_ES').format(activity.date),
-                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7)),
                         ),
                         const SizedBox(width: 12),
-                        Icon(Icons.access_time, size: 12, color: Colors.grey[600]),
+                        Icon(Icons.access_time, size: 12, color: Theme.of(context).iconTheme.color?.withOpacity(0.6)),
                         const SizedBox(width: 4),
                         Text(
                           activity.duration,
-                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7)),
                         ),
                       ],
                     ),
@@ -511,7 +511,7 @@ class _HomeTabState extends State<HomeTab> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: Colors.grey[200],
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(
@@ -520,15 +520,14 @@ class _HomeTabState extends State<HomeTab> {
                         Icon(
                           Icons.trending_up,
                           size: 12,
-                          color: Colors.grey[700],
+                          color: Theme.of(context).iconTheme.color?.withOpacity(0.8),
                         ),
                         const SizedBox(width: 4),
                         Text(
                           activity.improvement,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey[700],
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             fontWeight: FontWeight.w500,
+                            color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.8),
                           ),
                         ),
                       ],

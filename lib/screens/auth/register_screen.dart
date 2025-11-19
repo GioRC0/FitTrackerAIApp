@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // Para Numeric Input
 import 'package:fitracker_app/api/api_service.dart';
+import 'package:fitracker_app/data/auth_storage_service.dart';
 import 'package:fitracker_app/models/user_dtos.dart';
 import 'package:fitracker_app/config/app_colors.dart';
 import 'package:fitracker_app/screens/auth/verify_code_screen.dart'; // Para la navegación exitosa
@@ -22,6 +23,7 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final ApiService _apiService = ApiService();
+  final AuthStorageService _storageService = AuthStorageService();
   bool _isLoading = false;
 
   // Controladores de Texto
@@ -74,8 +76,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
         final tokenData = await _apiService.register(registerDto: dto);
 
+        // CRÍTICO: Guardar los tokens después del registro
+        await _storageService.saveTokens(tokenData);
+
         // --- ÉXITO: Registro Exitoso y Envío de Email ---
-        // Aquí deberías guardar el TokenDto y navegar a una pantalla de "Verificar Email"
+        if (!mounted) return;
+        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('¡Registro exitoso! Se envió un código a ${dto.email}.'),
@@ -91,15 +97,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
         );
 
       } on ApiException catch (e) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: ${e.message}'), backgroundColor: AppColors.alertError),
         );
       } catch (e) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error inesperado: ${e.toString()}'), backgroundColor: AppColors.alertError),
         );
       } finally {
-        setState(() { _isLoading = false; });
+        if (mounted) {
+          setState(() { _isLoading = false; });
+        }
       }
     }
   }
@@ -231,7 +241,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               Text(
                 'Completa tus datos para comenzar',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Colors.grey, // text-muted-foreground
+                  color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
                 ),
                 textAlign: TextAlign.center,
               ),

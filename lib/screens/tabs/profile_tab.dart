@@ -4,6 +4,7 @@ import 'package:fitracker_app/services/user_profile_service.dart';
 import 'package:fitracker_app/data/auth_storage_service.dart';
 import 'package:fitracker_app/screens/splash_screen.dart';
 import 'package:fitracker_app/screens/profile/edit_profile_screen.dart';
+import 'package:fitracker_app/screens/settings/settings_screen.dart';
 
 class ProfileTab extends StatefulWidget {
   const ProfileTab({super.key});
@@ -116,7 +117,7 @@ class _ProfileTabState extends State<ProfileTab> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline, size: 64, color: Colors.grey[400]),
+            Icon(Icons.error_outline, size: 64, color: Theme.of(context).iconTheme.color?.withOpacity(0.5)),
             const SizedBox(height: 16),
             Text(_errorMessage ?? 'Error al cargar el perfil'),
             const SizedBox(height: 16),
@@ -200,9 +201,9 @@ class _ProfileTabState extends State<ProfileTab> {
                   const SizedBox(height: 4),
                   Text(
                     _profile!.email,
-                    style: TextStyle(
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontSize: 14,
-                      color: Colors.grey[600],
+                      color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -210,22 +211,22 @@ class _ProfileTabState extends State<ProfileTab> {
                     children: [
                       Text(
                         '${_profile!.weight.toStringAsFixed(1)} kg',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey[600],
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
                         ),
                       ),
                       const SizedBox(width: 8),
                       Text(
                         '•',
-                        style: TextStyle(color: Colors.grey[600]),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       Text(
                         '${_profile!.height} cm',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey[600],
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
                         ),
                       ),
                     ],
@@ -239,7 +240,7 @@ class _ProfileTabState extends State<ProfileTab> {
               onPressed: _navigateToEditProfile,
               icon: const Icon(Icons.edit_outlined),
               style: IconButton.styleFrom(
-                side: BorderSide(color: Colors.grey[300]!),
+                side: BorderSide(color: Theme.of(context).dividerColor),
               ),
             ),
           ],
@@ -292,9 +293,9 @@ class _ProfileTabState extends State<ProfileTab> {
                       Text(
                         stat['label'] as String,
                         textAlign: TextAlign.center,
-                        style: TextStyle(
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           fontSize: 11,
-                          color: Colors.grey[600],
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.7),
                         ),
                       ),
                     ],
@@ -325,9 +326,9 @@ class _ProfileTabState extends State<ProfileTab> {
             const SizedBox(height: 4),
             Text(
               'Desbloquea logros completando ejercicios',
-              style: TextStyle(
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 fontSize: 14,
-                color: Colors.grey[600],
+                color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
               ),
             ),
             const SizedBox(height: 16),
@@ -338,11 +339,13 @@ class _ProfileTabState extends State<ProfileTab> {
                   padding: const EdgeInsets.all(24.0),
                   child: Column(
                     children: [
-                      Icon(Icons.emoji_events_outlined, size: 48, color: Colors.grey[400]),
+                      Icon(Icons.emoji_events_outlined, size: 48, color: Theme.of(context).iconTheme.color?.withOpacity(0.5)),
                       const SizedBox(height: 8),
                       Text(
                         'No hay logros disponibles',
-                        style: TextStyle(color: Colors.grey[600]),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
+                        ),
                       ),
                     ],
                   ),
@@ -378,11 +381,11 @@ class _ProfileTabState extends State<ProfileTab> {
       decoration: BoxDecoration(
         color: isEarned
             ? Theme.of(context).primaryColor.withOpacity(0.05)
-            : Colors.grey[100],
+            : Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
         border: Border.all(
           color: isEarned
               ? Theme.of(context).primaryColor.withOpacity(0.2)
-              : Colors.grey[300]!,
+              : Theme.of(context).dividerColor,
         ),
         borderRadius: BorderRadius.circular(12),
       ),
@@ -393,17 +396,17 @@ class _ProfileTabState extends State<ProfileTab> {
             achievement.icon,
             style: TextStyle(
               fontSize: 32,
-              color: isEarned ? null : Colors.grey[400],
+              color: isEarned ? null : Theme.of(context).iconTheme.color?.withOpacity(0.4),
             ),
           ),
           const SizedBox(height: 8),
           Text(
             achievement.name,
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               fontSize: 13,
               fontWeight: FontWeight.w600,
-              color: isEarned ? Colors.black : Colors.grey[600],
+              color: isEarned ? null : Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.6),
             ),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
@@ -413,15 +416,14 @@ class _ProfileTabState extends State<ProfileTab> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.grey[300],
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 'Desbloqueado',
-                style: TextStyle(
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   fontSize: 9,
                   fontWeight: FontWeight.w500,
-                  color: Colors.grey[800],
                 ),
               ),
             ),
@@ -436,9 +438,11 @@ class _ProfileTabState extends State<ProfileTab> {
       children: [
         OutlinedButton.icon(
           onPressed: () {
-            // TODO: Implementar configuración
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Configuración próximamente')),
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const SettingsScreen(),
+              ),
             );
           },
           icon: const Icon(Icons.settings_outlined),
@@ -487,17 +491,16 @@ class _ProfileTabState extends State<ProfileTab> {
           children: [
             Text(
               'FitTracker AI v1.0.0',
-              style: TextStyle(
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 fontSize: 14,
-                color: Colors.grey[600],
+                color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
               ),
             ),
             const SizedBox(height: 4),
             Text(
               'Monitoreo inteligente de ejercicios',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[500],
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.6),
               ),
             ),
           ],
