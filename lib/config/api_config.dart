@@ -12,7 +12,7 @@ class ApiConfig {
   /// 
   /// **Para EMULADOR ANDROID**: Usa 10.0.2.2
   /// - 10.0.2.2 es la IP especial que el emulador usa para acceder a localhost
-  static const String apiHost = 'http://192.168.18.203:5180';
+  static const String apiHost = 'http://192.168.18.174:5180';
   
   // Emulador (descomenta esta línea para usar emulador)
   // static const String apiHost = 'http://10.0.2.2:5180';
