@@ -6,11 +6,15 @@ class PosePainterMediaPipe extends CustomPainter {
   final List<MediaPipePose> poses;
   final Size absoluteImageSize;
   final CameraLensDirection cameraLensDirection;
+  final Set<int> highlightedLandmarks; // 🔥 Landmarks a resaltar en rojo
+  final Orientation deviceOrientation;
 
   PosePainterMediaPipe({
     required this.poses,
     required this.absoluteImageSize,
     required this.cameraLensDirection,
+    this.highlightedLandmarks = const {},
+    required this.deviceOrientation,
   });
 
   @override
@@ -63,17 +67,54 @@ class PosePainterMediaPipe extends CustomPainter {
 
       // Solo dibujar si tiene buena confianza (>= 0.6)
       if (landmark.likelihood >= 0.6) {
-        // Punto principal
-        paint.color = Colors.greenAccent;
-        canvas.drawCircle(point, 6.0, paint);
+        // 🔥 Verificar si este landmark debe resaltarse en rojo
+        final isHighlighted = highlightedLandmarks.contains(landmarkIndex);
+        
+        if (isHighlighted) {
+          // 🔥 Sombra roja más grande (capa exterior)
+          final outerGlowPaint = Paint()
+            ..style = PaintingStyle.fill
+            ..color = Colors.red.withOpacity(0.2)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 25.0);
+          canvas.drawCircle(point, 35.0, outerGlowPaint);
+          
+          // 🔥 Sombra roja intermedia
+          final middleGlowPaint = Paint()
+            ..style = PaintingStyle.fill
+            ..color = Colors.red.withOpacity(0.4)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18.0);
+          canvas.drawCircle(point, 25.0, middleGlowPaint);
+          
+          // 🔥 Sombra roja cercana (más intensa)
+          final innerGlowPaint = Paint()
+            ..style = PaintingStyle.fill
+            ..color = Colors.red.withOpacity(0.6)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10.0);
+          canvas.drawCircle(point, 18.0, innerGlowPaint);
+          
+          // Punto principal rojo (más grande)
+          paint.color = Colors.red;
+          canvas.drawCircle(point, 9.0, paint);
 
-        // Círculo de confianza
-        final confidencePaint = Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.0
-          ..color = _getConfidenceColor(landmark.likelihood);
+          // Círculo exterior rojo pulsante
+          final errorPaint = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 3.5
+            ..color = Colors.redAccent;
+          canvas.drawCircle(point, 15.0, errorPaint);
+        } else {
+          // Punto normal verde
+          paint.color = Colors.greenAccent;
+          canvas.drawCircle(point, 6.0, paint);
 
-        canvas.drawCircle(point, 10.0, confidencePaint);
+          // Círculo de confianza
+          final confidencePaint = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.0
+            ..color = _getConfidenceColor(landmark.likelihood);
+
+          canvas.drawCircle(point, 10.0, confidencePaint);
+        }
       }
     }
   }
@@ -144,19 +185,36 @@ class PosePainterMediaPipe extends CustomPainter {
       return Offset.zero;
     }
     
-    // La cámara en Android captura en landscape (width > height)
-    // Pero mostramos en portrait (width < height)
-    // MediaPipe devuelve coordenadas en píxeles de la imagen landscape
-    // Para rotar 90° horario: canvas_x = image_y, canvas_y = image_width - image_x
+    double canvasX, canvasY, scaleX, scaleY;
     
-    final canvasX = y;  // x del canvas = y de la imagen
-    final canvasY = absoluteImageSize.width - x;  // y del canvas = width - x de la imagen
+    // Determinar si la imagen de la cámara necesita rotación
+    final bool cameraIsLandscape = absoluteImageSize.width > absoluteImageSize.height;
+    final bool displayIsPortrait = deviceOrientation == Orientation.portrait;
     
-    // Escalar al tamaño del canvas
-    // El ancho del canvas corresponde al alto de la imagen
-    final scaleX = size.width / absoluteImageSize.height;
-    // El alto del canvas corresponde al ancho de la imagen  
-    final scaleY = size.height / absoluteImageSize.width;
+    if (cameraIsLandscape && displayIsPortrait) {
+      // PORTRAIT: Rotar 90° horario
+      // canvas_x = image_y, canvas_y = image_width - image_x
+      canvasX = y;
+      canvasY = absoluteImageSize.width - x;
+      
+      // Escalar: ancho del canvas = alto de la imagen
+      scaleX = size.width / absoluteImageSize.height;
+      scaleY = size.height / absoluteImageSize.width;
+    } else if (cameraIsLandscape && !displayIsPortrait) {
+      // LANDSCAPE: Sin rotación, solo escalar
+      canvasX = x;
+      canvasY = y;
+      
+      scaleX = size.width / absoluteImageSize.width;
+      scaleY = size.height / absoluteImageSize.height;
+    } else {
+      // Caso sin rotación (cámara portrait o configuración especial)
+      canvasX = x;
+      canvasY = y;
+      
+      scaleX = size.width / absoluteImageSize.width;
+      scaleY = size.height / absoluteImageSize.height;
+    }
     
     final scaledX = canvasX * scaleX;
     final scaledY = canvasY * scaleY;
@@ -177,6 +235,8 @@ class PosePainterMediaPipe extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PosePainterMediaPipe oldDelegate) {
-    return poses != oldDelegate.poses;
+    return poses != oldDelegate.poses ||
+           highlightedLandmarks != oldDelegate.highlightedLandmarks ||
+           deviceOrientation != oldDelegate.deviceOrientation;
   }
 }

@@ -7,12 +7,134 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:fitracker_app/services/mediapipe_pose_detector.dart';
 import 'package:fitracker_app/models/exercises_dtos.dart';
 import 'package:fitracker_app/models/training_session.dart';
 import 'package:fitracker_app/services/training_session_service.dart';
 import 'package:fitracker_app/screens/training/session_report_screen.dart';
 import 'pose_painter_mediapipe.dart';
+
+// ============================================================================
+// AudioFeedbackManager: Maneja reproducción de audios de feedback
+// ============================================================================
+class AudioFeedbackManager {
+  // 🔥 Dos players separados para evitar que se corten entre sí
+  final AudioPlayer _repetitionPlayer = AudioPlayer();
+  final AudioPlayer _feedbackPlayer = AudioPlayer();
+  final Random _random = Random();
+  
+  // 🔥 Variable para tipo de voz (configurable a futuro)
+  String voiceType = 'voice1'; // 'voice1' o 'voice2'
+  
+  // Constructor para configurar los players
+  AudioFeedbackManager() {
+    _configurePlayer();
+  }
+  
+  void _configurePlayer() async {
+    // Configurar ambos players con baja latencia
+    await _repetitionPlayer.setReleaseMode(ReleaseMode.stop);
+    await _repetitionPlayer.setVolume(1.0);
+    await _repetitionPlayer.setPlayerMode(PlayerMode.lowLatency);
+    
+    await _feedbackPlayer.setReleaseMode(ReleaseMode.stop);
+    await _feedbackPlayer.setVolume(1.0);
+    await _feedbackPlayer.setPlayerMode(PlayerMode.lowLatency);
+    
+    print('🔧 AudioPlayers configurados (2 instancias): Volume=1.0, Mode=lowLatency');
+  }
+  
+  // Mapeo de errores a carpetas
+  static const Map<String, String> _pushupPlankErrors = {
+    'cadera_caida': 'cadera_caida',
+    'codos_abiertos': 'codos_abiertos',
+    'pelvis_levantada': 'pelvis_levantada',
+  };
+  
+  static const Map<String, String> _squatErrors = {
+    'espalda_arqueada': 'espalda_arqueada',
+    'poca_profundidad': 'poca_profundidad',
+    'valgo_rodilla': 'valgo_rodilla',
+  };
+  
+  // Cantidad de audios por carpeta (ajustar según tus archivos)
+  static const int _correctoAudioCount = 8;
+  static const int _terminarAudioCount = 8;
+  static const int _errorAudioCount = 6; // pushup/plank/squat errores
+  
+  Future<void> playRepetition() async {
+    try {
+      // 🔥 Usar player dedicado para repeticiones
+      await _repetitionPlayer.stop();
+      await _repetitionPlayer.play(AssetSource('sounds/repetition.mp3'));
+      print('🔊 Audio: Repetición reproducida');
+    } catch (e) {
+      print('❌ Error reproduciendo repetition: $e');
+    }
+  }
+  
+  Future<void> playCorrecto() async {
+    try {
+      final audioNum = _random.nextInt(_correctoAudioCount) + 1;
+      await _feedbackPlayer.stop();
+      await _feedbackPlayer.play(AssetSource('sounds/correcto/$voiceType/$audioNum.mp3'));
+      print('🔊 Audio: Correcto ($voiceType/$audioNum)');
+    } catch (e) {
+      print('❌ Error reproduciendo correcto: $e');
+    }
+  }
+  
+  Future<void> playTerminarEjercicio() async {
+    try {
+      final audioNum = _random.nextInt(_terminarAudioCount) + 1;
+      await _feedbackPlayer.stop();
+      await _feedbackPlayer.play(AssetSource('sounds/terminar_ejercicio/$voiceType/$audioNum.mp3'));
+      print('🔊 Audio: Terminar ejercicio ($voiceType/$audioNum)');
+    } catch (e) {
+      print('❌ Error reproduciendo terminar: $e');
+    }
+  }
+  
+  Future<void> playPushupPlankError(String errorType) async {
+    try {
+      final folder = _pushupPlankErrors[errorType];
+      if (folder == null) {
+        print('⚠️ Error desconocido para pushup/plank: $errorType');
+        return;
+      }
+      
+      final audioNum = _random.nextInt(_errorAudioCount) + 1;
+      await _feedbackPlayer.stop();
+      await _feedbackPlayer.play(AssetSource('sounds/pushup y plank/$folder/$voiceType/$audioNum.mp3'));
+      print('🔊 Audio: Pushup/Plank error $errorType ($voiceType/$audioNum)');
+    } catch (e) {
+      print('❌ Error reproduciendo pushup/plank error: $e');
+    }
+  }
+  
+  Future<void> playSquatError(String errorType) async {
+    try {
+      final folder = _squatErrors[errorType];
+      if (folder == null) {
+        print('⚠️ Error desconocido para squat: $errorType');
+        return;
+      }
+      
+      final audioNum = _random.nextInt(_errorAudioCount) + 1;
+      await _feedbackPlayer.stop();
+      await _feedbackPlayer.play(AssetSource('sounds/squat/$folder/$voiceType/$audioNum.mp3'));
+      print('🔊 Audio: Squat error $errorType ($voiceType/$audioNum)');
+    } catch (e) {
+      print('❌ Error reproduciendo squat error: $e');
+    }
+  }
+  
+  void dispose() {
+    _repetitionPlayer.dispose();
+    _feedbackPlayer.dispose();
+  }
+}
 
 // ============================================================================
 // WebSocketClient: Maneja comunicación con API de predicción
@@ -150,6 +272,7 @@ class CameraTrainingScreen extends StatefulWidget {
 class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   late final MediaPipePoseDetector _poseDetector;
   late final WebSocketClient _wsClient;
+  late final AudioFeedbackManager _audioManager;
   CameraController? _cameraController;
   List<MediaPipePose> _poses = [];
   bool _isCameraInitialized = false;
@@ -166,6 +289,17 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Map<String, double> _allProbabilities = {};
   String _currentStatus = "Iniciando...";
   int _repCounter = 0;
+  
+  // 🔥 Contador de correctos seguidos para audio
+  int _consecutiveCorrectCount = 0;
+  
+  // 🔥 Landmarks a resaltar en rojo (cuando hay error)
+  Set<int> _errorLandmarks = {};
+  
+  // 🔥 Control de parpadeo de bordes
+  bool _showBorderFlash = false;
+  Color _borderFlashColor = Colors.transparent;
+  double _borderOpacity = 0.0;
 
   // PUSHUP: State Machine (Basada en Ángulo del Codo)
   String _pushupState = 'up'; 
@@ -189,6 +323,10 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   // Control de tiempo
   DateTime _lastProcessedTime = DateTime.now();
   static const _processingInterval = Duration(milliseconds: 33); 
+  
+  // 🔥 Timer para mostrar tiempo transcurrido
+  Timer? _elapsedTimer;
+  int _elapsedSeconds = 0; 
 
   // Cache para suavizado EMA
   final Map<int, List<double>> _smoothCache = {};
@@ -207,6 +345,14 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     _exerciseType = _mapExerciseNameToType(widget.exercise.name);
     _trainingStartTime = DateTime.now();
     _poseDetector = MediaPipePoseDetector();
+    _audioManager = AudioFeedbackManager();
+    
+    // 🔥 Iniciar timer para tiempo transcurrido
+    _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() => _elapsedSeconds++);
+      }
+    });
     
     final wsUrl = _getWebSocketUrl(_exerciseType);
     _wsClient = WebSocketClient(wsUrl: wsUrl);
@@ -618,13 +764,13 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       _pushupState = 'up';
       _repCounter++;
       
+      // 🔊 Reproducir audio de repetición (sin await para no bloquear)
+      unawaited(_audioManager.playRepetition());
+      
       // Validar duración mínima
       if (_pushupCurrentRepData.length >= 10) {
         print('✅ PUSHUP Rep $_repCounter completada. Enviando ${_pushupCurrentRepData.length} frames.');
         _wsClient.sendFeatures({'frames': _pushupCurrentRepData});
-        setState(() {
-          _currentStatus = 'Rep $_repCounter detectada! Clasificando...';
-        });
       } else {
         _repCounter--; 
       }
@@ -661,13 +807,13 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     if (avgKneeAngle > _squatAngleUp && _squatState == 'down') {
       _squatState = 'up';
       _repCounter++;
+      
+      // 🔊 Reproducir audio de repetición (sin await para no bloquear)
+      unawaited(_audioManager.playRepetition());
 
       if (_squatCurrentRepData.isNotEmpty) {
         print('🔍 SQUAT Rep $_repCounter completada, enviando ${_squatCurrentRepData.length} frames');
         _wsClient.sendFeatures({'frames': _squatCurrentRepData});
-        setState(() {
-          _currentStatus = 'Rep $_repCounter completada! Clasificando...';
-        });
       }
     }
 
@@ -783,13 +929,115 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
           .replaceAll('_', ' ');
       
       if (_exerciseType == 'plank') {
-        _currentStatus = '$status (${(displayConfidence * 100).toStringAsFixed(0)}%)';
+        _currentStatus = status;
       } else {
-        _currentStatus = 'Rep $_repCounter: $status (${(displayConfidence * 100).toStringAsFixed(0)}%)';
+        _currentStatus = 'Rep $_repCounter: $status';
       }
     });
+    
+    // 🔊 Reproducir audio según clasificación
+    _playFeedbackAudio(best.key);
 
     _captureTrainingData(best.key, displayConfidence, probabilities);
+  }
+  
+  // 🔊 Método para reproducir audio según clasificación
+  void _playFeedbackAudio(String classification) {
+    // Extraer el tipo de error/correcto
+    final status = classification.replaceAll('${_exerciseType}_', '');
+    
+    if (status == 'correcto') {
+      // ✅ Limpiar landmarks de error
+      setState(() => _errorLandmarks = {});
+      
+      // 🔥 Parpadeo verde en los bordes
+      _flashBorder(Colors.green);
+      
+      // Incrementar contador de correctos seguidos
+      _consecutiveCorrectCount++;
+      
+      // Solo reproducir audio si hay 3 correctos seguidos
+      if (_consecutiveCorrectCount >= 3) {
+        _audioManager.playCorrecto();
+        _consecutiveCorrectCount = 0; // Resetear contador después de reproducir
+      }
+    } else {
+      // ❌ Si hay error, resetear contador y reproducir audio de error
+      _consecutiveCorrectCount = 0;
+      
+      // 🔥 Parpadeo rojo en los bordes
+      _flashBorder(Colors.red);
+      
+      // 🔥 Definir qué landmarks resaltar según el error
+      setState(() => _errorLandmarks = _getLandmarksForError(status));
+      
+      if (_exerciseType == 'pushup' || _exerciseType == 'plank') {
+        _audioManager.playPushupPlankError(status);
+      } else if (_exerciseType == 'squat') {
+        _audioManager.playSquatError(status);
+      }
+    }
+  }
+  
+  // 🔥 Mapear errores a landmarks problemáticos
+  Set<int> _getLandmarksForError(String errorType) {
+    if (_exerciseType == 'pushup' || _exerciseType == 'plank') {
+      switch (errorType) {
+        case 'cadera_caida':
+          return {MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.rightHip};
+        case 'codos_abiertos':
+          return {MediaPipePoseLandmark.leftElbow, MediaPipePoseLandmark.rightElbow, 
+                  MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.rightShoulder};
+        case 'pelvis_levantada':
+          return {MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.rightHip};
+        default:
+          return {};
+      }
+    } else if (_exerciseType == 'squat') {
+      switch (errorType) {
+        case 'espalda_arqueada':
+          return {MediaPipePoseLandmark.leftShoulder, MediaPipePoseLandmark.rightShoulder,
+                  MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.rightHip};
+        case 'poca_profundidad':
+          return {MediaPipePoseLandmark.leftKnee, MediaPipePoseLandmark.rightKnee,
+                  MediaPipePoseLandmark.leftHip, MediaPipePoseLandmark.rightHip};
+        case 'valgo_rodilla':
+          return {MediaPipePoseLandmark.leftKnee, MediaPipePoseLandmark.rightKnee};
+        default:
+          return {};
+      }
+    }
+    return {};
+  }
+  
+  // 🔥 Activar parpadeo de bordes con animación difuminada
+  void _flashBorder(Color color) async {
+    if (!mounted) return;
+    
+    setState(() {
+      _borderFlashColor = color;
+      _showBorderFlash = true;
+    });
+    
+    // Aparecer suavemente (fade in) - 200ms
+    for (int i = 0; i <= 10; i++) {
+      await Future.delayed(const Duration(milliseconds: 20));
+      if (!mounted) return;
+      setState(() => _borderOpacity = i / 10.0);
+    }
+    
+    // Mantener visible por 150ms
+    await Future.delayed(const Duration(milliseconds: 150));
+    
+    // Desaparecer suavemente (fade out) - 300ms
+    for (int i = 10; i >= 0; i--) {
+      await Future.delayed(const Duration(milliseconds: 30));
+      if (!mounted) return;
+      setState(() => _borderOpacity = i / 10.0);
+    }
+    
+    if (!mounted) return;
+    setState(() => _showBorderFlash = false);
   }
 
   void _captureTrainingData(
@@ -821,8 +1069,14 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
   Future<void> _finishTraining() async {
     if (_isFinishingSession) return;
     setState(() => _isFinishingSession = true);
-
+    
     try {
+      // 🔊 Reproducir audio PRIMERO y esperar a que termine
+      await _audioManager.playTerminarEjercicio();
+      
+      // Esperar 500ms adicionales para asegurar que el audio se escuche completamente
+      await Future.delayed(const Duration(milliseconds: 500));
+      
       await _cameraController?.stopImageStream();
       _wsClient.disconnect();
 
@@ -872,10 +1126,12 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
 
   @override
   void dispose() {
+    _elapsedTimer?.cancel();
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
     _poseDetector.dispose();
     _wsClient.disconnect();
+    _audioManager.dispose();
     super.dispose();
   }
 
@@ -942,6 +1198,140 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
       ),
     );
   }
+  
+  // 🔥 Barra superior con diseño similar a la imagen
+  Widget _buildTopBar() {
+    // Formatear tiempo transcurrido
+    final minutes = (_elapsedSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_elapsedSeconds % 60).toString().padLeft(2, '0');
+    final timeText = '$minutes:$seconds';
+    
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: Colors.white.withOpacity(0.2), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          // Botón de retroceder
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
+              padding: EdgeInsets.zero,
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          const SizedBox(width: 16),
+          // Información del ejercicio
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Nombre del ejercicio
+                Text(
+                  widget.exercise.name,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                // Estado
+                Text(
+                  _currentStatus,
+                  style: TextStyle(
+                    color: _getStatusColor(_currentStatus),
+                    fontSize: 27,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Tiempo
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Tiempo',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                timeText,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 16),
+          // Repeticiones
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Reps.',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '$_repCounter',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 16),
+          // Botón de cambiar cámara
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: Theme.of(context).primaryColor,
+              shape: BoxShape.circle,
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.flip_camera_ios, color: Colors.white, size: 24),
+              padding: EdgeInsets.zero,
+              onPressed: _switchCamera,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Color _getStatusColor(String status) {
     if (status.contains('correcto')) return Colors.greenAccent;
@@ -957,24 +1347,183 @@ class _CameraTrainingScreenState extends State<CameraTrainingScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Entrenamiento en Vivo'),
-        backgroundColor: Theme.of(context).primaryColor,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(icon: const Icon(Icons.flip_camera_ios), onPressed: _switchCamera),
-          if (!_isFinishingSession)
-            TextButton.icon(onPressed: _finishTraining, icon: const Icon(Icons.check_circle, color: Colors.white), label: const Text('Finalizar', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
-          if (_isFinishingSession) const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)))),
-        ],
-      ),
+      backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
           CameraPreview(_cameraController!),
           if (_poses.isNotEmpty)
-            CustomPaint(painter: PosePainterMediaPipe(poses: _poses, absoluteImageSize: _absoluteImageSize, cameraLensDirection: _cameraController!.description.lensDirection)),
-          Positioned(top: 20, left: 20, right: 20, child: _buildFeedbackPanel()),
+            CustomPaint(painter: PosePainterMediaPipe(
+              poses: _poses, 
+              absoluteImageSize: _absoluteImageSize, 
+              cameraLensDirection: _cameraController!.description.lensDirection,
+              highlightedLandmarks: _errorLandmarks,
+              deviceOrientation: MediaQuery.of(context).orientation,
+            )),
+          // 🔥 Barra superior con información
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(child: _buildTopBar()),
+          ),
+          // 🔥 Botón de terminar en la parte inferior
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                child: _isFinishingSession
+                    ? Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.7),
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              SizedBox(width: 12),
+                              Text(
+                                'Finalizando...',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : ElevatedButton(
+                        onPressed: _finishTraining,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red.shade600,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 18),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          elevation: 8,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: const [
+                            Icon(Icons.stop_circle, size: 24),
+                            SizedBox(width: 12),
+                            Text(
+                              'Terminar Entrenamiento',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+            ),
+          ),
+          // 🔥 Bordes difuminados con parpadeo de feedback (solo en los bordes)
+          if (_showBorderFlash)
+            IgnorePointer(
+              child: Stack(
+                children: [
+                  // Borde superior
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      height: 80,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.7),
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.3),
+                            _borderFlashColor.withOpacity(0),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Borde inferior
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      height: 80,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.bottomCenter,
+                          end: Alignment.topCenter,
+                          colors: [
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.7),
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.3),
+                            _borderFlashColor.withOpacity(0),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Borde izquierdo
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    child: Container(
+                      width: 80,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.7),
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.3),
+                            _borderFlashColor.withOpacity(0),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Borde derecho
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    right: 0,
+                    child: Container(
+                      width: 80,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerRight,
+                          end: Alignment.centerLeft,
+                          colors: [
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.7),
+                            _borderFlashColor.withOpacity(_borderOpacity * 0.3),
+                            _borderFlashColor.withOpacity(0),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
